@@ -109,6 +109,8 @@ export interface BlockDef extends NodeTypeDef {
   configKeys?: string[]
   /** If true, this block is only visible when --advanced mode is enabled. */
   advanced?: boolean
+  /** Block types to auto-insert before this block when used as a pipeline starter. */
+  starterPrereqs?: string[]
 }
 
 // ---- Registries ----

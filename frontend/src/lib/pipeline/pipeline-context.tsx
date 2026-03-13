@@ -501,12 +501,22 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
   )
 
   const addBlock = useCallback((type: string, atIndex?: number) => {
-    const id = `block-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-    const block: PipelineBlock = { id, type }
+    const def = getBlockDef(type)
     updatePipeline((prev) => {
       const blocks = [...prev.blocks]
       const insertAt = atIndex ?? blocks.length
-      blocks.splice(insertAt, 0, block)
+
+      // Auto-insert prerequisite blocks when adding to an empty pipeline
+      const prereqs = def?.starterPrereqs
+      if (prereqs && prereqs.length > 0 && blocks.length === 0 && insertAt === 0) {
+        for (const prereqType of prereqs) {
+          const prereqId = `block-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+          blocks.push({ id: prereqId, type: prereqType })
+        }
+      }
+
+      const id = `block-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+      blocks.push({ id, type })
       return { ...prev, blocks }
     })
   }, [updatePipeline])

@@ -210,6 +210,10 @@ Blocks are self-contained modules. Each block lives in `custom_blocks/<name>/` w
 - **Database**: SQLite (run history)
 - **External**: RunPod API, OpenRouter API, Topaz Labs API, comfy-gen CLI
 
+## Privacy Note
+
+Some pipeline blocks need to send local files (images, videos) to remote services like RunPod for processing. When this happens, files are temporarily uploaded to [tmpfiles.org](https://tmpfiles.org) to make them accessible to the remote GPU. Uploaded files are automatically deleted by tmpfiles.org after a short period. No files are uploaded unless you explicitly run a pipeline that requires remote processing.
+
 ## Troubleshooting
 
 **"comfy-gen CLI not found" warning in ComfyUI Gen block**
