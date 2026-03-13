@@ -468,7 +468,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
 
 export const blockDef: BlockDef = {
   type: 'promptWriter',
-  label: 'Prompt Writer',
+  label: 'Prompt Writer (OpenRouter)',
   description: 'Generate an image or video prompt using an LLM',
   size: 'lg',
   canStart: true,

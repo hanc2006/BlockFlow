@@ -464,10 +464,10 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
 
 export const blockDef: BlockDef = {
   type: 'i2vPromptWriter',
-  label: 'I2V Prompt Writer',
+  label: 'I2V Prompt Writer (OpenRouter)',
   description: 'Generate a video prompt from an image using a vision LLM',
   size: 'lg',
-  canStart: false,
+  canStart: true,
   inputs: [{ name: 'image', kind: PORT_IMAGE, required: false }],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }],
   bindings: [
