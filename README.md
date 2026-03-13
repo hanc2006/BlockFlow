@@ -8,6 +8,15 @@ Build visual workflows by chaining blocks together — prompt generation, ComfyU
 
 ---
 
+### Pipeline Editor
+![Pipeline View](docs/screenshots/pipeline-view.png)
+
+### ComfyUI Gen Block
+![ComfyUI Gen Block](docs/screenshots/comfyui-gen-block.png)
+
+### Artifacts
+![Artifacts Page](docs/screenshots/artifacts-page.png)
+
 </div>
 
 ## Quick Start
