@@ -34,9 +34,14 @@ OPENROUTER_MODELS_CACHE: dict[str, Any] = {
 def _persist_jobs_locked() -> None:
     """Persist all jobs atomically. Call this only while holding JOBS_LOCK."""
     try:
+        # Strip non-serializable keys (e.g. _proc subprocess references)
+        serializable = {
+            jid: {k: v for k, v in rec.items() if not k.startswith("_")}
+            for jid, rec in JOBS.items()
+        }
         tmp_path = config.JOB_HISTORY_PATH.with_suffix(".json.tmp")
         with tmp_path.open("w", encoding="utf-8") as f:
-            json.dump(JOBS, f, ensure_ascii=True, sort_keys=True)
+            json.dump(serializable, f, ensure_ascii=True, sort_keys=True)
         tmp_path.replace(config.JOB_HISTORY_PATH)
     except Exception as e:
         print(f"[job-history] failed to persist {config.JOB_HISTORY_PATH}: {e}")

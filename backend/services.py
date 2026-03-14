@@ -475,7 +475,7 @@ def _job_snapshot(job_id: str) -> dict[str, Any]:
     with state.JOBS_LOCK:
         job = state.JOBS.get(job_id)
         if job:
-            return dict(job)
+            return {k: v for k, v in job.items() if not k.startswith("_")}
     # Fall back to SQLite for completed/historical jobs
     stored = db.get_job(job_id)
     return stored if stored else {}

@@ -14,6 +14,7 @@ import {
   type PipelineBlock,
   type BlockStatus,
   type BlockState,
+  type IterationState,
 } from './types'
 import {
   type PortKind,
@@ -44,8 +45,8 @@ import { abortAllActivePolls } from './serverless-poller'
 
 // ---- Persistence (sessionStorage, keyed by tabId) ----
 
-const PIPELINE_PREFIX = 'pipeline_v1_'
-const PIPELINE_RUNTIME_PREFIX = 'pipeline_runtime_v1_'
+const PIPELINE_PREFIX = 'pipeline_v2_'
+const PIPELINE_RUNTIME_PREFIX = 'pipeline_runtime_v2_'
 
 const EMPTY_PIPELINE: Pipeline = { id: 'default', blocks: [] }
 
@@ -185,7 +186,7 @@ export interface UpstreamProducer {
 
 // ---- Context ----
 
-type ExecuteFn = (inputs: Record<string, unknown>) => Promise<void | BlockExecuteResult>
+type ExecuteFn = (inputs: Record<string, unknown>, signal: AbortSignal) => Promise<void | BlockExecuteResult>
 
 function findLastEnabledIndex(blocks: PipelineBlock[], maxExclusive: number): number {
   for (let i = Math.min(maxExclusive, blocks.length) - 1; i >= 0; i--) {
@@ -194,7 +195,11 @@ function findLastEnabledIndex(blocks: PipelineBlock[], maxExclusive: number): nu
   return -1
 }
 
-function getImmediateOutputKinds(blocks: PipelineBlock[], index: number): Set<PortKind> {
+function getAdvertisedOutputKinds(
+  blocks: PipelineBlock[],
+  index: number,
+  hints?: Record<string, string>,
+): Set<PortKind> {
   if (index < 0 || index >= blocks.length) return new Set()
   const block = blocks[index]
   const def = getNodeType(block.type)
@@ -205,7 +210,17 @@ function getImmediateOutputKinds(blocks: PipelineBlock[], index: number): Set<Po
   if (block.type === 'hitl') {
     const prevIdx = findLastEnabledIndex(blocks, index)
     if (prevIdx < 0) return new Set()
-    return getImmediateOutputKinds(blocks, prevIdx)
+    return getAdvertisedOutputKinds(blocks, prevIdx, hints)
+  }
+
+  if (hints) {
+    const hintedPort = hints[block.id]
+    if (hintedPort) {
+      const matchingPorts = def.outputs.filter((port) => port.name === hintedPort)
+      if (matchingPorts.length > 0) {
+        return new Set(matchingPorts.map((port) => canonicalizePortKind(port.kind)))
+      }
+    }
   }
 
   return new Set(def.outputs.map((port) => canonicalizePortKind(port.kind)))
@@ -246,6 +261,8 @@ interface PipelineContextValue {
    *  If no position given, defaults to end of pipeline. */
   getAddableTypes: (atIndex?: number) => NodeTypeDef[]
   registerBlockExecute: (blockId: string, fn: ExecuteFn) => void
+  /** Hint which output port is active for a block (narrows add-block menu). */
+  setOutputHint: (blockId: string, activePortName: string) => void
   runPipeline: (opts?: { continueFromExisting?: boolean }) => Promise<void>
   cancelPipeline: () => void
   /** Whether any block has completed outputs from a previous run (enables "Continue" mode). */
@@ -256,6 +273,8 @@ interface PipelineContextValue {
   setBlockSource: (blockId: string, portName: string, sourceBlockId: string) => void
   /** Clear explicit source override for an input port (falls back to nearest producer). */
   clearBlockSource: (blockId: string, portName: string) => void
+  /** Reset runtime state for a block and all downstream blocks in its chain/branches. */
+  resetRuntimeFromBlock: (blockId: string, opts?: { preserveOutputHint?: boolean }) => void
   /** Get all upstream blocks that produce a given port kind, for a given block */
   getUpstreamProducers: (blockId: string, portKind: PortKind) => UpstreamProducer[]
   /** Whether any block has unsatisfied required inputs */
@@ -274,6 +293,8 @@ interface PipelineContextValue {
   removeBranch: (forkBlockId: string, branchIndex: number) => void
   /** Get valid block types for a position within a branch. */
   getAddableTypesForBranch: (ancestors: PipelineBlock[], chain: PipelineBlock[], atIndex?: number) => NodeTypeDef[]
+  /** Active iteration state for iterator blocks (null when no iteration is running). */
+  iterationState: IterationState | null
 }
 
 const PipelineCtx = createContext<PipelineContextValue | null>(null)
@@ -313,11 +334,15 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
   )
   const [isRunning, setIsRunning] = useState<boolean>(initialRuntime.current.isRunning)
   const [runningBlockId, setRunningBlockId] = useState<string | null>(initialRuntime.current.runningBlockId)
+  const [iterationState, setIterationState] = useState<IterationState | null>(null)
+  const iterationStateRef = useRef<IterationState | null>(null)
   const pipelineRef = useRef(pipeline)
   const blockStatesRef = useRef(blockStates)
   const isRunningRef = useRef(initialRuntime.current.isRunning)
   const runningBlockIdRef = useRef<string | null>(initialRuntime.current.runningBlockId)
   const executeFns = useRef<Map<string, ExecuteFn>>(new Map())
+  /** Map of blockId → active output port name (e.g. 'image'). Used to narrow add-block menu. */
+  const [outputHints, setOutputHints] = useState<Record<string, string>>({})
   const runLockRef = useRef(false)
   const cancelledRef = useRef(false)
   const runAbortControllerRef = useRef<AbortController | null>(null)
@@ -347,6 +372,10 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
       return next
     })
   }, [tabId])
+
+  useEffect(() => {
+    pipelineRef.current = pipeline
+  }, [pipeline])
 
   useEffect(() => {
     blockStatesRef.current = blockStates
@@ -393,6 +422,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
   )
 
   // Build a lightweight producer map from a block's ancestors (tree-aware)
+  // Include pipeline.blocks in deps so consumers re-evaluate after structural changes
   const buildProducerMapFromAncestors = useCallback(
     (ancestors: PipelineBlock[]): Map<string, UpstreamProducer[]> => {
       const map = new Map<string, UpstreamProducer[]>()
@@ -401,8 +431,12 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         if (block.disabled) continue
         const def = getNodeType(block.type)
         if (!def) continue
-        for (const port of def.outputs) {
-          const kind = canonicalizePortKind(port.kind)
+        const outputKinds = getAdvertisedOutputKinds(
+          ancestors,
+          i,
+          outputHints,
+        )
+        for (const kind of outputKinds) {
           const entries = map.get(kind) ?? []
           entries.push({ blockId: block.id, blockIndex: i, blockLabel: block.label || def.label })
           map.set(kind, entries)
@@ -410,7 +444,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
       }
       return map
     },
-    [],
+    [outputHints, pipeline.blocks],
   )
 
   // Resolve a single input port value from the accumulator, respecting source overrides
@@ -444,9 +478,13 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
   }
 
   // Resolve inputs for a block from a given states snapshot (tree-aware)
-  const resolveInputs = useCallback(
-    (blockId: string, states: Map<string, BlockState>): Record<string, unknown> => {
-      const location = findBlockInTree(pipelineRef.current.blocks, blockId)
+  const resolveInputsForBlocks = useCallback(
+    (
+      blocks: PipelineBlock[],
+      blockId: string,
+      states: Map<string, BlockState>,
+    ): Record<string, unknown> => {
+      const location = findBlockInTree(blocks, blockId)
       if (!location) return {}
       const block = location.chain[location.index]
       const def = getNodeType(block.type)
@@ -463,17 +501,24 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
     [buildAccumulatorFromAncestors, buildProducerMapFromAncestors],
   )
 
+  const resolveInputs = useCallback(
+    (blockId: string, states: Map<string, BlockState>): Record<string, unknown> => {
+      return resolveInputsForBlocks(pipelineRef.current.blocks, blockId, states)
+    },
+    [resolveInputsForBlocks],
+  )
+
   const getInputsForBlock = useCallback(
     (blockId: string): Record<string, unknown> => {
-      return resolveInputs(blockId, blockStatesRef.current)
+      return resolveInputsForBlocks(pipeline.blocks, blockId, blockStatesRef.current)
     },
-    [resolveInputs],
+    [pipeline.blocks, resolveInputsForBlocks],
   )
 
   // Check if a block has all required inputs satisfied by upstream producers (tree-aware)
   const isBlockReady = useCallback(
     (blockId: string): boolean => {
-      const location = findBlockInTree(pipelineRef.current.blocks, blockId)
+      const location = findBlockInTree(pipeline.blocks, blockId)
       if (!location) return false
       const def = getNodeType(location.chain[location.index].type)
       if (!def) return false
@@ -487,17 +532,17 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         return producers && producers.length > 0
       })
     },
-    [buildProducerMapFromAncestors],
+    [buildProducerMapFromAncestors, pipeline.blocks],
   )
 
   const getUpstreamProducers = useCallback(
     (blockId: string, portKind: PortKind): UpstreamProducer[] => {
-      const location = findBlockInTree(pipelineRef.current.blocks, blockId)
+      const location = findBlockInTree(pipeline.blocks, blockId)
       if (!location) return []
       const producerMap = buildProducerMapFromAncestors(location.ancestors)
       return producerMap.get(canonicalizePortKind(portKind)) ?? []
     },
-    [buildProducerMapFromAncestors],
+    [buildProducerMapFromAncestors, pipeline.blocks],
   )
 
   const addBlock = useCallback((type: string, atIndex?: number) => {
@@ -546,6 +591,12 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
     })
     for (const id of idsToClean) {
       executeFns.current.delete(id)
+      setOutputHints((prev) => {
+        if (!(id in prev)) return prev
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
     }
   }, [persistRuntimeSnapshot, updatePipeline])
 
@@ -657,9 +708,59 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
     [updatePipeline],
   )
 
+  const resetRuntimeFromBlock = useCallback(
+    (blockId: string, opts?: { preserveOutputHint?: boolean }) => {
+      const location = findBlockInTree(pipeline.blocks, blockId)
+      if (!location) return
+
+      const idsToReset = new Set<string>()
+      for (const downstreamBlock of location.chain.slice(location.index)) {
+        for (const nested of walkBlocks([downstreamBlock])) {
+          idsToReset.add(nested.id)
+        }
+      }
+
+      const next = new Map(blockStatesRef.current)
+      for (const id of idsToReset) {
+        next.set(id, { status: 'idle', outputs: {} })
+      }
+
+      blockStatesRef.current = next
+      setBlockStates(next)
+      persistRuntimeSnapshot(next)
+      setOutputHints((prev) => {
+        const next = { ...prev }
+        for (const id of idsToReset) {
+          if (!opts?.preserveOutputHint || id !== blockId) {
+            delete next[id]
+          }
+        }
+        return next
+      })
+    },
+    [persistRuntimeSnapshot, pipeline.blocks],
+  )
+
   const registerBlockExecute = useCallback(
     (blockId: string, fn: ExecuteFn) => {
       executeFns.current.set(blockId, fn)
+    },
+    [],
+  )
+
+  const setOutputHint = useCallback(
+    (blockId: string, activePortName: string) => {
+      setOutputHints((prev) => {
+        const currentHint = prev[blockId] ?? ''
+        if (currentHint === activePortName) return prev
+        if (!activePortName) {
+          if (!(blockId in prev)) return prev
+          const next = { ...prev }
+          delete next[blockId]
+          return next
+        }
+        return { ...prev, [blockId]: activePortName }
+      })
     },
     [],
   )
@@ -711,6 +812,26 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
     let hadError = false
     let hadPartialFailure = false
     let completedBlockExecutions = 0
+
+    const updateIterState = (state: IterationState | null) => {
+      iterationStateRef.current = state
+      setIterationState(state ? { ...state, items: [...state.items] } : null)
+    }
+
+    function extractItemLabel(item: unknown, index: number): string {
+      if (typeof item === 'string') {
+        try {
+          const url = new URL(item)
+          const segments = url.pathname.split('/')
+          return segments[segments.length - 1] || `Item ${index + 1}`
+        } catch {
+          // Not a URL — try filesystem path
+          const parts = item.split('/')
+          return parts[parts.length - 1] || `Item ${index + 1}`
+        }
+      }
+      return `Item ${index + 1}`
+    }
 
     // Recursive chain executor: runs blocks sequentially, launches branches in parallel
     async function executeChain(chain: PipelineBlock[]): Promise<void> {
@@ -783,7 +904,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
                 reject(new DOMException('Pipeline cancelled', 'AbortError'))
               }, { once: true })
             })
-            const execResult = await Promise.race([executeFn(freshInputs), cancelRace])
+            const execResult = await Promise.race([executeFn(freshInputs, runAbortController.signal), cancelRace])
             forwardOutputs(block, freshInputs)
             setBlockStatus(block.id, 'completed')
             completedBlockExecutions++
@@ -816,7 +937,101 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
           break // Stop this chain on error (branches already launched continue)
         }
 
-        // After executing this block, launch all its branches in parallel
+        // After executing this block, check if it's an iterator
+        const iterDef = getBlockDef(block.type)
+        if (iterDef?.iterator) {
+          const iterPortName = iterDef.iteratorOutput ?? iterDef.outputs[0]?.name
+          const iterOutput = blockStatesRef.current.get(block.id)?.outputs[iterPortName]
+
+          if (Array.isArray(iterOutput) && iterOutput.length > 1) {
+            // Build the remaining chain (everything after this block)
+            const remainingChain = chain.slice(idx + 1)
+            // Also include branches of the iterator block
+            const iterBranches = block.branches ?? []
+
+            const iterState: IterationState = {
+              blockId: block.id,
+              currentIndex: -1,
+              totalCount: iterOutput.length,
+              items: iterOutput.map((item, i) => ({
+                index: i,
+                label: extractItemLabel(item, i),
+                status: 'pending' as const,
+                thumbnailUrl: typeof item === 'string' ? item : undefined,
+              })),
+            }
+            updateIterState(iterState)
+
+            for (let itemIdx = 0; itemIdx < iterOutput.length; itemIdx++) {
+              if (cancelledRef.current) break
+
+              iterState.currentIndex = itemIdx
+              iterState.items[itemIdx].status = 'running'
+              updateIterState(iterState)
+
+              // Override the iterator block's output to this single item
+              setBlockOutput(block.id, iterPortName, iterOutput[itemIdx])
+
+              // Reset downstream statuses for this iteration, but preserve completed
+              // outputs so viewers can continue showing prior items while the next
+              // item is still processing.
+              const resetStates = new Map(blockStatesRef.current)
+              for (const b of walkBlocks(remainingChain)) {
+                const existing = resetStates.get(b.id)
+                resetStates.set(b.id, {
+                  status: 'idle',
+                  outputs: existing?.outputs ?? {},
+                })
+              }
+              for (const branch of iterBranches) {
+                for (const b of walkBlocks(branch)) {
+                  const existing = resetStates.get(b.id)
+                  resetStates.set(b.id, {
+                    status: 'idle',
+                    outputs: existing?.outputs ?? {},
+                  })
+                }
+              }
+              blockStatesRef.current = resetStates
+              setBlockStates(resetStates)
+
+              try {
+                // Execute the remaining chain for this item
+                await executeChain(remainingChain)
+                // Execute branches for this item
+                for (const branch of iterBranches) {
+                  await executeChain(branch)
+                }
+                iterState.items[itemIdx].status = 'completed'
+              } catch (e) {
+                if (e instanceof DOMException && e.name === 'AbortError') {
+                  iterState.items[itemIdx].status = 'skipped'
+                  break
+                }
+                iterState.items[itemIdx].status = 'error'
+                iterState.items[itemIdx].error = e instanceof Error ? e.message : String(e)
+                hadPartialFailure = true
+                // Skip failed item, continue to next
+              }
+              updateIterState(iterState)
+            }
+
+            // Restore the full array as output after all iterations
+            setBlockOutput(block.id, iterPortName, iterOutput)
+
+            const failedCount = iterState.items.filter((i) => i.status === 'error').length
+            const completedCount = iterState.items.filter((i) => i.status === 'completed').length
+            if (completedCount === 0 && failedCount > 0) {
+              hadError = true
+            }
+            setBlockStatusMessage(block.id, `${completedCount}/${iterState.totalCount} items completed`)
+
+            // Skip the rest of the chain — iterations already handled it
+            break
+          }
+        }
+
+        // Launch all branches of this block in parallel (non-iterator path)
         if (block.branches) {
           for (const branch of block.branches) {
             pendingBranches.push(executeChain(branch))
@@ -880,6 +1095,8 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
       runAbortControllerRef.current = null
       runningBlockIdRef.current = null
       isRunningRef.current = false
+      iterationStateRef.current = null
+      setIterationState(null)
       setRunningBlockId(null)
       setIsRunning(false)
       persistRuntimeSnapshot(blockStatesRef.current, false, null)
@@ -888,7 +1105,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
   }, [persistRuntimeSnapshot, resolveInputs, setBlockOutput, setBlockStatus, setBlockStatusMessage, setTabRunState, tabId])
 
   const getAddableTypes = useCallback((atIndex?: number): NodeTypeDef[] => {
-    const blocks = pipelineRef.current.blocks
+    const blocks = pipeline.blocks
     const insertAt = atIndex ?? blocks.length
 
     if (insertAt === 0 || blocks.length === 0) return getStarterTypes()
@@ -897,7 +1114,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
     if (lastEnabledIdx < 0) return getStarterTypes()
 
     const lastEnabledBlock = blocks[lastEnabledIdx]
-    const lastOutputKinds = getImmediateOutputKinds(blocks, lastEnabledIdx)
+    const lastOutputKinds = getAdvertisedOutputKinds(blocks, lastEnabledIdx, outputHints)
     if (lastOutputKinds.size === 0) return []
 
     const lastType = lastEnabledBlock.type
@@ -923,7 +1140,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
       }
     }
     return result
-  }, [])
+  }, [outputHints, pipeline.blocks])
 
   // ---- Branching methods ----
 
@@ -984,6 +1201,12 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
       })
       for (const id of idsToClean) {
         executeFns.current.delete(id)
+        setOutputHints((prev) => {
+          if (!(id in prev)) return prev
+          const next = { ...prev }
+          delete next[id]
+          return next
+        })
       }
     },
     [persistRuntimeSnapshot, updatePipeline],
@@ -998,13 +1221,13 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
       const lastEnabledIdx = findLastEnabledIndex(linear, linear.length)
       if (lastEnabledIdx < 0) return getStarterTypes()
 
-      const lastOutputKinds = getImmediateOutputKinds(linear, lastEnabledIdx)
+      const lastOutputKinds = getAdvertisedOutputKinds(linear, lastEnabledIdx, outputHints)
       if (lastOutputKinds.size === 0) return []
 
       const lastType = linear[lastEnabledIdx].type
       return getValidNextTypes(lastOutputKinds).filter((def) => def.type !== lastType)
     },
-    [],
+    [outputHints],
   )
 
   const importFlowJson = useCallback((json: string) => {
@@ -1022,6 +1245,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
     setRunningBlockId(null)
     persistRuntimeSnapshot(emptyStates, false, null)
     executeFns.current.clear()
+    setOutputHints({})
   }, [persistRuntimeSnapshot, tabId])
 
   const exportFlowJson = useCallback((name = 'pipeline'): string => {
@@ -1060,8 +1284,13 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
     const upstreamKinds = new Set<string>()
     for (const anc of location.ancestors) {
       if (anc.disabled) continue
-      const ancDef = getNodeType(anc.type)
-      if (ancDef) for (const port of ancDef.outputs) upstreamKinds.add(canonicalizePortKind(port.kind))
+      const ancIndex = location.ancestors.findIndex((candidate) => candidate.id === anc.id)
+      const outputKinds = getAdvertisedOutputKinds(
+        location.ancestors,
+        ancIndex,
+        outputHints,
+      )
+      for (const kind of outputKinds) upstreamKinds.add(kind)
     }
     return requiredInputs.some((port) => !upstreamKinds.has(canonicalizePortKind(port.kind)))
   })
@@ -1085,12 +1314,14 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         isBlockReady,
         getAddableTypes,
         registerBlockExecute,
+        setOutputHint,
         runPipeline,
         cancelPipeline,
         isRunning,
         runningBlockId,
         setBlockSource,
         clearBlockSource,
+        resetRuntimeFromBlock,
         getUpstreamProducers,
         hasMissingRequired,
         hasCompletedBlocks,
@@ -1101,6 +1332,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         addBlockToBranch,
         removeBranch,
         getAddableTypesForBranch,
+        iterationState,
       }}
     >
       {children}

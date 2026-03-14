@@ -69,15 +69,24 @@ def _probe_image(path: Path) -> dict[str, Any]:
 def _calculate_output_dims(
     src_w: int, src_h: int, preset: str,
 ) -> tuple[int, int]:
-    """Calculate output dimensions from a resolution preset."""
+    """Calculate output dimensions from a resolution preset.
+
+    If the source already meets or exceeds the preset, default to 2x upscale
+    so the enhance API always produces a higher-resolution result.
+    When preset is 'original', return (0, 0) to let Topaz autopilot decide.
+    """
     target_h = RESOLUTION_PRESETS.get(preset, 0)
-    if target_h == 0 or target_h >= src_h:
-        return (0, 0)  # 0,0 means don't specify — let Topaz decide / keep original
-    # Scale proportionally
+    if target_h == 0:
+        return (0, 0)  # 'original' — let Topaz autopilot decide
     ratio = src_w / src_h if src_h > 0 else 1.0
-    out_h = target_h
-    out_w = round(out_h * ratio)
-    # Ensure even
+    if target_h <= src_h:
+        # Source already meets preset — upscale 2x from source
+        out_h = src_h * 2
+        out_w = round(out_h * ratio)
+    else:
+        out_h = target_h
+        out_w = round(out_h * ratio)
+    # Ensure even dimensions
     out_w = out_w + (out_w % 2)
     out_h = out_h + (out_h % 2)
     return (out_w, out_h)
@@ -159,6 +168,7 @@ def upscale_image(
     headers = {
         "X-API-Key": api_key,
         "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "User-Agent": "Mozilla/5.0 (compatible; SGS-UI/1.0)",
     }
 
     req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
@@ -200,7 +210,7 @@ def upscale_image(
         try:
             status_req = urllib.request.Request(
                 f"{IMAGE_API_BASE}/status/{process_id}",
-                headers={"X-API-Key": api_key},
+                headers={"X-API-Key": api_key, "User-Agent": "Mozilla/5.0 (compatible; SGS-UI/1.0)"},
                 method="GET",
             )
             with urllib.request.urlopen(status_req, timeout=30) as status_resp:
@@ -216,7 +226,7 @@ def upscale_image(
             # Download output
             dl_req = urllib.request.Request(
                 f"{IMAGE_API_BASE}/download/output/{process_id}",
-                headers={"X-API-Key": api_key},
+                headers={"X-API-Key": api_key, "User-Agent": "Mozilla/5.0 (compatible; SGS-UI/1.0)"},
                 method="GET",
             )
             with urllib.request.urlopen(dl_req, timeout=120) as dl_resp:

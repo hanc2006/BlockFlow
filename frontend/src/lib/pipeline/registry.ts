@@ -40,7 +40,7 @@ export interface BlockComponentProps {
   setOutput: (portName: string, value: unknown) => void
   /** Optional control output from execute functions. */
   // Keep this minimal: blocks can request a graceful chain stop without erroring.
-  registerExecute: (fn: (inputs: Record<string, unknown>) => Promise<void | BlockExecuteResult>) => void
+  registerExecute: (fn: (inputs: Record<string, unknown>, signal: AbortSignal) => Promise<void | BlockExecuteResult>) => void
   /** Register this block's execute function for the pipeline runner.
    *  The function receives resolved inputs at execution time (not stale closures). */
   /** Set a custom status badge label (e.g. "Generating prompt…", "Upscaling…").
@@ -49,6 +49,10 @@ export interface BlockComponentProps {
   /** Optional: update the block execution status outside the main runner.
    *  Used for resumable polling when route navigation unmounts the pipeline UI. */
   setExecutionStatus?: (status: 'idle' | 'running' | 'completed' | 'error' | 'skipped', error?: string) => void
+  /** Hint which output port name is active (e.g. 'image' or 'video').
+   *  Used to narrow the add-block menu for blocks with multiple output kinds.
+   *  Call with empty string to clear the hint. */
+  setOutputHint?: (activePortName: string) => void
 }
 
 export interface BlockExecuteResult {
@@ -111,6 +115,12 @@ export interface BlockDef extends NodeTypeDef {
   advanced?: boolean
   /** Block types to auto-insert before this block when used as a pipeline starter. */
   starterPrereqs?: string[]
+  /** When true, this block produces multiple items and the pipeline runner
+   *  executes the entire downstream chain once per item, sequentially. */
+  iterator?: boolean
+  /** Which output port contains the array of items to iterate over.
+   *  Defaults to the first output port name. */
+  iteratorOutput?: string
 }
 
 // ---- Registries ----

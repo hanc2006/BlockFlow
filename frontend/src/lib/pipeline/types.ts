@@ -27,3 +27,26 @@ export interface BlockState {
   /** Custom label shown on the status badge (e.g. "Generating prompt…"). Cleared on status change. */
   statusMessage?: string
 }
+
+// ---- Iteration (multi-item loaders) ----
+
+export type IterationItemStatus = 'pending' | 'running' | 'completed' | 'error' | 'skipped'
+
+export interface IterationItemState {
+  index: number
+  /** Display label — e.g. filename or "Item 1" */
+  label: string
+  status: IterationItemStatus
+  error?: string
+  /** Thumbnail URL for visual identification (optional) */
+  thumbnailUrl?: string
+}
+
+export interface IterationState {
+  /** The iterator block that produced the items */
+  blockId: string
+  /** Currently executing item index (-1 when not started) */
+  currentIndex: number
+  totalCount: number
+  items: IterationItemState[]
+}

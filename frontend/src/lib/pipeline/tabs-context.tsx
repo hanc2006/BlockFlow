@@ -54,9 +54,9 @@ interface PipelineTabsContextValue {
 
 // ---- Persistence ----
 
-const TABS_KEY = 'pipeline_tabs'
-const PIPELINE_PREFIX = 'pipeline_v1_'
-const PIPELINE_RUNTIME_PREFIX = 'pipeline_runtime_v1_'
+const TABS_KEY = 'pipeline_tabs_v2'
+const PIPELINE_PREFIX = 'pipeline_v2_'
+const PIPELINE_RUNTIME_PREFIX = 'pipeline_runtime_v2_'
 const DEFAULT_TAB_LABEL = 'New Pipeline'
 
 function generateTabId(): string {

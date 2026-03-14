@@ -32,6 +32,7 @@ import { findBlockById, findBlockInTree } from '@/lib/pipeline/tree-utils'
 const ENDPOINT_KEY = 'comfygen_endpoint_id'
 const RUN_ENDPOINT = '/api/blocks/comfy_gen/run'
 const STATUS_ENDPOINT = '/api/blocks/comfy_gen/status'
+const CANCEL_ENDPOINT = '/api/blocks/comfy_gen/cancel'
 const PARSE_ENDPOINT = '/api/blocks/comfy_gen/parse-workflow'
 const EXTRACT_PNG_ENDPOINT = '/api/blocks/comfy_gen/extract-workflow-from-png'
 
@@ -181,6 +182,10 @@ function toMediaUrl(value: unknown): string {
   return ''
 }
 
+function makePendingOutput(kind: 'image' | 'video') {
+  return { __pendingOutput: true, kind }
+}
+
 function ComfyGenBlock({
   blockId,
   inputs,
@@ -188,8 +193,9 @@ function ComfyGenBlock({
   registerExecute,
   setStatusMessage,
   setExecutionStatus,
+  setOutputHint,
 }: BlockComponentProps) {
-  const { pipeline, addBlock } = usePipeline()
+  const { pipeline, addBlock, resetRuntimeFromBlock } = usePipeline()
 
   const [endpointId, setEndpointIdRaw] = useState(() => {
     if (typeof window === 'undefined') return ''
@@ -219,6 +225,13 @@ function ComfyGenBlock({
   const [progress, setProgress] = useState<ProgressInfo | null>(null)
   const [workflowError, setWorkflowError] = useState('')
   const [cliMissing, setCliMissing] = useState<string | null>(null)
+
+  // Restore output hint on mount when outputType is already known from session state
+  useEffect(() => {
+    if (outputType && outputType !== 'unknown') {
+      setOutputHint?.(outputType)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const workflowFileRef = useRef<HTMLInputElement | null>(null)
   const pngFileRef = useRef<HTMLInputElement | null>(null)
 
@@ -281,7 +294,7 @@ function ComfyGenBlock({
   }, [getMyIndex, pipeline.blocks, addBlock])
 
   // Parse workflow to detect LoadImage/LoadVideo nodes, KSamplers, empty prompts
-  const parseWorkflow = useCallback(async (json: string) => {
+  const parseWorkflow = useCallback(async (json: string): Promise<'image' | 'video' | 'unknown' | ''> => {
     try {
       const workflow = JSON.parse(json)
       const res = await fetch(PARSE_ENDPOINT, {
@@ -292,7 +305,7 @@ function ComfyGenBlock({
       const data = await res.json()
       if (!data.ok) {
         setWorkflowError(data.error || 'Failed to parse workflow')
-        return
+        return ''
       }
       setWorkflowError('')
       if (data.ok) {
@@ -357,7 +370,12 @@ function ComfyGenBlock({
         }
         setRefVideoOverrides(initRefOverrides)
 
-        setOutputType((data.output_type as string) || 'unknown')
+        const otype = (data.output_type as string) || 'unknown'
+        setOutputType(otype)
+        setOutputHint?.(otype !== 'unknown' ? otype : '')
+        if (otype === 'image' || otype === 'video' || otype === 'unknown') {
+          return otype
+        }
       }
     } catch {
       setLoadNodes([])
@@ -373,8 +391,11 @@ function ComfyGenBlock({
       setRefVideo([])
       setRefVideoOverrides({})
       setOutputType('')
+      setOutputHint?.('')
+      return ''
     }
-  }, [setLoadNodes, setNodeMappings, addUpstreamBlocks, setKsamplers, setKsamplerOverrides, setTextOverrides, setTextValues, setResolutionNodes, setResolutionOverrides, setFrameCounts, setFrameOverrides, setRefVideo, setRefVideoOverrides])
+    return ''
+  }, [setLoadNodes, setNodeMappings, addUpstreamBlocks, setKsamplers, setKsamplerOverrides, setTextOverrides, setTextValues, setResolutionNodes, setResolutionOverrides, setFrameCounts, setFrameOverrides, setRefVideo, setRefVideoOverrides, setOutputHint])
 
   // Re-parse on mount when workflow is restored from session state
   const didMountParse = useRef(false)
@@ -451,7 +472,9 @@ function ComfyGenBlock({
           return merged
         })
 
-        setOutputType((data.output_type as string) || 'unknown')
+        const otype2 = (data.output_type as string) || 'unknown'
+        setOutputType(otype2)
+        setOutputHint?.(otype2 !== 'unknown' ? otype2 : '')
       } catch { /* ignore — will be re-parsed on next workflow load */ }
     }
     reparse()
@@ -460,14 +483,19 @@ function ComfyGenBlock({
 
   const handleWorkflowFile = useCallback(async (file: File) => {
     setWorkflowError('')
+    resetRuntimeFromBlock(blockId, { preserveOutputHint: true })
     const text = await file.text()
     setWorkflowJson(text)
     setWorkflowName(file.name)
-    await parseWorkflow(text)
-  }, [setWorkflowJson, setWorkflowName, parseWorkflow])
+    const detectedType = await parseWorkflow(text)
+    if (detectedType === 'image' || detectedType === 'video') {
+      setOutput(detectedType, makePendingOutput(detectedType))
+    }
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName])
 
   const handlePngFile = useCallback(async (file: File) => {
     setWorkflowError('')
+    resetRuntimeFromBlock(blockId, { preserveOutputHint: true })
     const res = await fetch(EXTRACT_PNG_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
@@ -481,8 +509,11 @@ function ComfyGenBlock({
     const json = JSON.stringify(data.workflow)
     setWorkflowJson(json)
     setWorkflowName(file.name)
-    await parseWorkflow(json)
-  }, [setWorkflowJson, setWorkflowName, parseWorkflow])
+    const detectedType = await parseWorkflow(json)
+    if (detectedType === 'image' || detectedType === 'video') {
+      setOutput(detectedType, makePendingOutput(detectedType))
+    }
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setWorkflowJson, setWorkflowName, setOutput])
 
   // Polling helper with progress updates
   const pollJob = useCallback(async (jobId: string): Promise<Job> => {
@@ -540,7 +571,7 @@ function ComfyGenBlock({
   }, [setStatusMessage])
 
   useEffect(() => {
-    registerExecute(async (freshInputs) => {
+    registerExecute(async (freshInputs, signal) => {
       if (!workflowJson.trim()) throw new Error('No workflow loaded')
 
       let workflow: Record<string, unknown>
@@ -642,7 +673,18 @@ function ComfyGenBlock({
       const jobId = data.job_id as string
       setStatusMessage('Polling...')
 
-      const job = await pollJob(jobId)
+      // Cancel backend job if the pipeline is aborted
+      const onAbort = () => {
+        fetch(`${CANCEL_ENDPOINT}/${encodeURIComponent(jobId)}`, { method: 'POST' }).catch(() => {})
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+
+      let job: Job
+      try {
+        job = await pollJob(jobId)
+      } finally {
+        signal.removeEventListener('abort', onAbort)
+      }
 
       const jobAny = job as unknown as Record<string, unknown>
       const outputUrl = String(

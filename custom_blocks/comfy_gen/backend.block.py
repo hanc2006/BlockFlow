@@ -686,6 +686,11 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
             text=True,
         )
 
+        # Store process reference so cancel endpoint can kill it
+        with state.JOBS_LOCK:
+            if job_id in state.JOBS:
+                state.JOBS[job_id]["_proc"] = proc
+
         services._update_job(job_id, status="RUNNING")
 
         # Read stderr line by line for progress updates
@@ -709,6 +714,10 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
             elif "Submitting" in line:
                 services._update_job(job_id, progress_stage="submit", progress_message="Submitting...")
             elif "Job submitted" in line:
+                # Extract RunPod job ID: "Job submitted: <remote_id>"
+                match = re.search(r"Job submitted:\s*(\S+)", line)
+                if match:
+                    services._update_job(job_id, remote_job_id=match.group(1))
                 services._update_job(job_id, progress_stage="queue", progress_message="Waiting for worker...")
             # Capture validation/error lines from stderr
             elif any(kw in line for kw in ("Failed to validate", "Value not in list",
@@ -1008,3 +1017,48 @@ def status(job_id: str) -> JSONResponse:
     if not job:
         return JSONResponse({"job": {"job_id": job_id, "status": "UNKNOWN"}})
     return JSONResponse({"job": job})
+
+
+@router.post("/cancel/{job_id}")
+def cancel(job_id: str) -> JSONResponse:
+    """Cancel a running or queued comfy-gen job.
+
+    Kills the local subprocess and cancels the remote RunPod job if a
+    remote job ID has been captured.
+    """
+    with state.JOBS_LOCK:
+        job = state.JOBS.get(job_id)
+        if not job:
+            return JSONResponse({"ok": False, "error": "Job not found or already finished"}, status_code=404)
+        proc: subprocess.Popen | None = job.pop("_proc", None)
+        remote_job_id: str = job.get("remote_job_id") or ""
+        endpoint_id: str = job.get("endpoint_id") or ""
+
+    # Kill the local comfy-gen subprocess
+    if proc is not None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        print(f"[comfy-gen] Killed subprocess for job {job_id}", flush=True)
+
+    # Cancel the remote RunPod job
+    cancelled_remote = False
+    if remote_job_id:
+        try:
+            cmd = ["comfy-gen", "cancel", remote_job_id]
+            if endpoint_id:
+                cmd.extend(["--endpoint-id", endpoint_id])
+            subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            cancelled_remote = True
+            print(f"[comfy-gen] Cancelled remote job {remote_job_id} for {job_id}", flush=True)
+        except Exception as e:
+            print(f"[comfy-gen] Failed to cancel remote job {remote_job_id}: {e}", flush=True)
+
+    services._update_job(job_id, status="CANCELLED", error="Cancelled by user")
+
+    return JSONResponse({"ok": True, "cancelled_remote": cancelled_remote})

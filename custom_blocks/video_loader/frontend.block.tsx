@@ -1,10 +1,9 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
 import { useSessionState } from '@/lib/use-session-state'
 import {
   PORT_VIDEO,
@@ -42,24 +41,12 @@ async function fingerprintFile(file: File): Promise<string> {
   return `${bytes.length}:${(hash >>> 0).toString(16)}`
 }
 
-function parseVideoList(value: string): string[] {
-  if (!value.trim()) return []
-  const rows = value
-    .split('\n')
-    .map((row) => row.trim())
-    .filter(Boolean)
-
-  const expanded = rows.flatMap((row) => row.split(',').map((part) => part.trim()).filter(Boolean))
-  return Array.from(new Set(expanded))
-}
-
 function VideoLoaderBlock({
   blockId,
   setOutput,
   registerExecute,
   setStatusMessage,
 }: BlockComponentProps) {
-  const [videoSources, setVideoSources] = useSessionState(`block_${blockId}_video_sources`, '')
   const [uploadMode, setUploadMode] = useSessionState<UploadMode>(`block_${blockId}_upload_mode`, 'local')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [selectedFileFingerprint, setSelectedFileFingerprint] = useState('')
@@ -70,8 +57,6 @@ function VideoLoaderBlock({
   const [hasMeta, setHasMeta] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
-  const parsedVideos = useMemo(() => parseVideoList(videoSources), [videoSources])
-
   const materializeVideoUrl = async (): Promise<string> => {
     if (!selectedFile && uploadedVideoUrl && uploadedMode === uploadMode) {
       return uploadedVideoUrl
@@ -79,7 +64,7 @@ function VideoLoaderBlock({
 
     if (!selectedFile) {
       if (uploadedVideoUrl) return uploadedVideoUrl
-      return ''
+      throw new Error('Select a video file before running this block')
     }
 
     const payloadFingerprint = selectedFileFingerprint || await fingerprintFile(selectedFile)
@@ -110,25 +95,22 @@ function VideoLoaderBlock({
   // Check embedded metadata for /outputs/ URLs
   useEffect(() => {
     setHasMeta(false)
-    const urls = [...parsedVideos, ...(uploadedVideoUrl ? [uploadedVideoUrl] : '')]
-    const localUrl = urls.find((u) => u.startsWith('/outputs/'))
-    if (!localUrl) return
-    const filename = localUrl.split('/outputs/')[1]?.split('?')[0]
+    const url = uploadedVideoUrl
+    if (!url || !url.startsWith('/outputs/')) return
+    const filename = url.split('/outputs/')[1]?.split('?')[0]
     if (!filename) return
     fetch(`${FILE_META_ENDPOINT}/${encodeURIComponent(filename)}`)
       .then((r) => r.json())
       .then((d) => { if (d.has_meta) setHasMeta(true) })
       .catch(() => {})
-  }, [uploadedVideoUrl, parsedVideos])
+  }, [uploadedVideoUrl])
 
   useEffect(() => {
     registerExecute(async () => {
-      setStatusMessage('Preparing videos...')
-      const uploaded = await materializeVideoUrl()
-      const allVideos = Array.from(new Set([...parsedVideos, ...(uploaded ? [uploaded] : [])]))
-      if (allVideos.length === 0) throw new Error('Provide at least one video URL/path or upload a video')
-      setOutput('video', allVideos)
-      setStatusMessage(`${allVideos.length} video${allVideos.length === 1 ? '' : 's'} ready`)
+      setStatusMessage('Preparing video...')
+      const url = await materializeVideoUrl()
+      setOutput('video', [url])
+      setStatusMessage('Video ready')
     })
   })
 
@@ -159,7 +141,6 @@ function VideoLoaderBlock({
     }
   }
 
-  // Invalidate cached upload when mode changes
   const handleModeChange = (mode: UploadMode) => {
     setUploadMode(mode)
     if (uploadedVideoUrl && uploadedMode !== mode) {
@@ -171,19 +152,6 @@ function VideoLoaderBlock({
 
   return (
     <div className="space-y-3">
-      <div className="space-y-1">
-        <Label className="text-xs">Video URLs or paths</Label>
-        <Textarea
-          value={videoSources}
-          onChange={(e) => setVideoSources(e.target.value)}
-          placeholder="One per line or comma-separated"
-          className="min-h-[88px] resize-y text-xs"
-        />
-        <p className="text-[10px] text-muted-foreground">
-          Supports HTTP URLs and accessible local/volume paths.
-        </p>
-      </div>
-
       <input
         ref={fileInputRef}
         type="file"
@@ -270,10 +238,6 @@ function VideoLoaderBlock({
           <Input value={uploadedVideoUrl} readOnly className="h-8 text-xs" />
         </div>
       )}
-
-      {parsedVideos.length > 0 && (
-        <p className="text-[11px] text-muted-foreground">{parsedVideos.length} manual video source(s) configured</p>
-      )}
     </div>
   )
 }
@@ -281,13 +245,12 @@ function VideoLoaderBlock({
 export const blockDef: BlockDef = {
   type: 'videoLoader',
   label: 'Video Loader',
-  description: 'Load video URLs/paths (or upload) and pass them downstream',
+  description: 'Load a video file and pass it downstream',
   size: 'md',
   canStart: true,
   inputs: [],
   outputs: [{ name: 'video', kind: PORT_VIDEO }],
   configKeys: [
-    'video_sources',
     'upload_mode',
     'uploaded_video_url',
     'uploaded_video_fingerprint',

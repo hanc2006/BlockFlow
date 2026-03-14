@@ -121,6 +121,10 @@ function clampInt(value: number, min: number, max: number): number {
 
 function asImageInput(value: unknown): string {
   if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    const first = value.find((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    if (first) return first
+  }
   if (value && typeof value === 'object') {
     const obj = value as Record<string, unknown>
     const candidate = obj.image_url ?? obj.url ?? obj.path

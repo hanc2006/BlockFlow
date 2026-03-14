@@ -22,7 +22,7 @@ import {
 } from '@/lib/pipeline/registry'
 import { useBlockLayout } from '@/lib/pipeline/block-layout-context'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
-import type { PipelineBlock } from '@/lib/pipeline/types'
+import type { PipelineBlock, IterationState } from '@/lib/pipeline/types'
 import type { ComponentType } from 'react'
 
 const SIZE_CLASSES: Record<NodeSize, { width: string; minHeight: string; reducedHeight: string }> = {
@@ -75,6 +75,8 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
     setBlockSource,
     getUpstreamProducers,
     toggleBlockDisabled,
+    iterationState,
+    setOutputHint,
   } = usePipeline()
   const { mode: blockLayoutMode } = useBlockLayout()
 
@@ -86,6 +88,7 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
   const state = blockStates.get(block.id)
   const status = state?.status ?? 'idle'
   const inputs = getInputsForBlock(block.id)
+  const blockIterState = iterationState?.blockId === block.id ? iterationState : null
   const sizeClass = SIZE_CLASSES[def.size]
   const borderColor = SIZE_BORDER_COLORS[def.size]
   const displayLabel = block.label || def.label
@@ -147,6 +150,13 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
     [block.id, setBlockStatus],
   )
 
+  const handleSetOutputHint = useCallback(
+    (activePortName: string) => {
+      setOutputHint(block.id, activePortName)
+    },
+    [block.id, setOutputHint],
+  )
+
   const cardClasses = isDisabled
     ? `flex flex-col shrink-0 overflow-hidden border-2 border-dashed ${sizeClass.width} ${sizeClass.minHeight} opacity-50 ${borderColor} panningDisabled wheelDisabled`
     : [
@@ -180,6 +190,15 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
             ? <BlockStatusBadge status="skipped" />
             : <BlockStatusBadge status={status} statusMessage={state?.statusMessage} />
           }
+          {blockIterState && (
+            <span className="inline-flex items-center gap-1 rounded bg-purple-500/20 border border-purple-500/30 px-1.5 py-0 text-[10px] text-purple-400 font-medium">
+              <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="8" cy="8" r="6" strokeOpacity="0.3" />
+                <path d="M8 2a6 6 0 0 1 6 6" strokeLinecap="round" />
+              </svg>
+              {blockIterState.currentIndex + 1}/{blockIterState.totalCount}
+            </span>
+          )}
           {/* Toggle disable/enable */}
           <Button
             variant="ghost"
@@ -281,6 +300,8 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
             </div>
           )}
 
+          {blockIterState && <IterationProgressPanel iterState={blockIterState} />}
+
           <CardContent className={cardContentClasses}>
             <DynamicBlockContent
               blockType={block.type}
@@ -290,11 +311,82 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
               registerExecute={handleRegisterExecute}
               setStatusMessage={handleSetStatusMessage}
               setExecutionStatus={handleSetExecutionStatus}
+              setOutputHint={handleSetOutputHint}
             />
           </CardContent>
         </>
       )}
     </Card>
+  )
+}
+
+// ---- Iteration progress panel ----
+
+const ITER_STATUS_ICON: Record<string, { color: string; icon: string }> = {
+  pending:   { color: 'text-muted-foreground/50', icon: '○' },
+  running:   { color: 'text-blue-400',            icon: '◉' },
+  completed: { color: 'text-green-400',           icon: '●' },
+  error:     { color: 'text-red-400',             icon: '●' },
+  skipped:   { color: 'text-muted-foreground/40', icon: '○' },
+}
+
+function IterationProgressPanel({ iterState }: { iterState: IterationState }) {
+  const [expanded, setExpanded] = useState(false)
+  const completedCount = iterState.items.filter((i) => i.status === 'completed').length
+  const errorCount = iterState.items.filter((i) => i.status === 'error').length
+  const visibleCount = iterState.currentIndex >= 0
+    ? Math.min(iterState.currentIndex + 1, iterState.totalCount)
+    : 0
+  const progress = Math.round((visibleCount / iterState.totalCount) * 100)
+
+  return (
+    <div className="mx-4 mb-2 rounded-md border border-purple-500/20 bg-purple-500/5 overflow-hidden">
+      <button
+        type="button"
+        className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] hover:bg-purple-500/10 transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span className="text-purple-300 font-medium">
+          Iterating: {visibleCount}/{iterState.totalCount}
+          {errorCount > 0 && <span className="text-red-400 ml-1">({errorCount} failed)</span>}
+        </span>
+        <div className="flex items-center gap-2">
+          <div className="w-16 h-1 bg-purple-500/20 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-purple-400 rounded-full transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <span className="text-muted-foreground">{expanded ? '▾' : '▸'}</span>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-2 max-h-[120px] overflow-y-auto space-y-0.5">
+          {iterState.items.map((item) => {
+            const cfg = ITER_STATUS_ICON[item.status] ?? ITER_STATUS_ICON.pending
+            return (
+              <div
+                key={item.index}
+                className={`flex items-center gap-1.5 text-[10px] ${
+                  item.index === iterState.currentIndex ? 'font-medium' : ''
+                }`}
+              >
+                <span className={`${cfg.color} ${item.status === 'running' ? 'animate-pulse' : ''}`}>
+                  {cfg.icon}
+                </span>
+                <span className="truncate flex-1 text-muted-foreground">{item.label}</span>
+                {item.error && (
+                  <span className="text-red-400 truncate max-w-[120px]" title={item.error}>
+                    {item.error}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }
 
