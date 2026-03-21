@@ -123,6 +123,34 @@ describe('buildOverrides', () => {
       expect(overrides['230.steps']).toBe('25')
     })
 
+    it('uses override_map for SamplerCustomAdvanced nodes', () => {
+      const SCA_NODE: KSamplerInfo = {
+        node_id: '215', class_type: 'SamplerCustomAdvanced',
+        cfg: 1, sampler_name: 'euler_cfg_pp',
+        override_map: {
+          sampler_name: '209.sampler_name',
+          cfg: '213.cfg',
+          seed: '216.noise_seed',
+          steps: '211.steps',
+          scheduler: '211.scheduler',
+        },
+      }
+      const { overrides } = buildOverrides(makeBaseInput({
+        ksamplers: [SCA_NODE],
+        ksamplerOverrides: {
+          '215': { steps: '4', cfg: '1.2', denoise: '', sampler_name: 'res_2s', scheduler: 'beta' },
+        },
+      }))
+      // Overrides should target the remapped node IDs
+      expect(overrides['209.sampler_name']).toBe('res_2s')
+      expect(overrides['213.cfg']).toBe('1.2')
+      expect(overrides['211.steps']).toBe('4')
+      expect(overrides['211.scheduler']).toBe('beta')
+      // Should NOT have overrides on the SamplerCustomAdvanced node itself
+      expect(overrides['215.sampler_name']).toBeUndefined()
+      expect(overrides['215.cfg']).toBeUndefined()
+    })
+
     it('falls back to workflow default for empty override fields', () => {
       const { overrides } = buildOverrides(makeBaseInput({
         ksamplerOverrides: {

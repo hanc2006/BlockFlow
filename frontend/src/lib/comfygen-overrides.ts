@@ -6,12 +6,15 @@
 export interface KSamplerInfo {
   node_id: string
   class_type: string
+  label?: string
   steps?: number
   cfg?: number
   seed?: number
   denoise?: number
   sampler_name?: string
   scheduler?: string
+  /** For SamplerCustomAdvanced: maps field names to actual node_id.field override targets */
+  override_map?: Record<string, string>
 }
 
 export interface KSamplerOverride {
@@ -120,19 +123,22 @@ export function buildOverrides(input: BuildOverridesInput): { overrides: Record<
     if (v) overrides[key] = v
   }
 
-  // KSampler
+  // KSampler (standard and SamplerCustomAdvanced with override_map)
   for (const ks of input.ksamplers.slice(0, 3)) {
     const ov = input.ksamplerOverrides[ks.node_id]
-    set(`${ks.node_id}.steps`, ov?.steps, ks.steps)
-    set(`${ks.node_id}.cfg`, ov?.cfg, ks.cfg)
-    set(`${ks.node_id}.denoise`, ov?.denoise, ks.denoise)
+    const om = ks.override_map
+    // Helper: use override_map target if available, else default node_id.field
+    const target = (field: string) => om?.[field] ?? `${ks.node_id}.${field}`
+    set(target('steps'), ov?.steps, ks.steps)
+    set(target('cfg'), ov?.cfg, ks.cfg)
+    set(target('denoise'), ov?.denoise, ks.denoise)
     // Samplers/schedulers use autoSelect, not autoNumeric — don't use chipOrVal
     const samplerChips = input.autoSelect[`${ks.node_id}.sampler_name`]
     const samplerVal = (samplerChips?.length ? samplerChips[0] : undefined) || ov?.sampler_name?.trim() || (ks.sampler_name != null ? String(ks.sampler_name) : '')
-    if (samplerVal) overrides[`${ks.node_id}.sampler_name`] = samplerVal
+    if (samplerVal) overrides[target('sampler_name')] = samplerVal
     const schedulerChips = input.autoSelect[`${ks.node_id}.scheduler`]
     const schedulerVal = (schedulerChips?.length ? schedulerChips[0] : undefined) || ov?.scheduler?.trim() || (ks.scheduler != null ? String(ks.scheduler) : '')
-    if (schedulerVal) overrides[`${ks.node_id}.scheduler`] = schedulerVal
+    if (schedulerVal) overrides[target('scheduler')] = schedulerVal
   }
 
   // Resolution

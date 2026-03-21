@@ -380,8 +380,15 @@ def _resolve_input(workflow: dict[str, Any], value: Any) -> Any:
 
 
 def _detect_ksamplers(workflow: dict[str, Any]) -> list[dict[str, Any]]:
-    """Find KSampler nodes with their steps/cfg/seed/denoise/sampler/scheduler values."""
+    """Find KSampler nodes with their steps/cfg/seed/denoise/sampler/scheduler values.
+
+    Supports:
+    - KSampler / KSamplerAdvanced (standard nodes with all params inline)
+    - SamplerCustomAdvanced (modular: wires to KSamplerSelect, CFGGuider, RandomNoise, etc.)
+    """
     samplers = []
+
+    # Standard KSampler nodes
     for node_id, node in workflow.items():
         if not isinstance(node, dict):
             continue
@@ -389,11 +396,13 @@ def _detect_ksamplers(workflow: dict[str, Any]) -> list[dict[str, Any]]:
         if class_type not in ("KSampler", "KSamplerAdvanced"):
             continue
         inputs = node.get("inputs", {})
+        meta_title = node.get("_meta", {}).get("title", "")
         entry: dict[str, Any] = {
             "node_id": node_id,
             "class_type": class_type,
         }
-        # Resolve literal or wired values
+        if meta_title and meta_title != class_type:
+            entry["label"] = meta_title
         steps = _resolve_input(workflow, inputs.get("steps"))
         if isinstance(steps, (int, float)):
             entry["steps"] = int(steps)
@@ -413,6 +422,89 @@ def _detect_ksamplers(workflow: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(scheduler, str):
             entry["scheduler"] = scheduler
         samplers.append(entry)
+
+    # SamplerCustomAdvanced nodes — trace wired inputs to find sampler/cfg/seed
+    for node_id, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        if node.get("class_type") != "SamplerCustomAdvanced":
+            continue
+        inputs = node.get("inputs", {})
+        meta_title = node.get("_meta", {}).get("title", "")
+        entry: dict[str, Any] = {
+            "node_id": node_id,
+            "class_type": "SamplerCustomAdvanced",
+        }
+        if meta_title and meta_title != "SamplerCustomAdvanced":
+            entry["label"] = meta_title
+
+        # Trace sampler input → KSamplerSelect node (has sampler_name)
+        sampler_ref = inputs.get("sampler")
+        if isinstance(sampler_ref, list) and len(sampler_ref) >= 2:
+            sampler_node = workflow.get(str(sampler_ref[0]), {})
+            if sampler_node.get("class_type") == "KSamplerSelect":
+                sn = sampler_node.get("inputs", {}).get("sampler_name")
+                if isinstance(sn, str):
+                    entry["sampler_name"] = sn
+                # Use the KSamplerSelect node_id for sampler_name overrides
+                entry["_sampler_select_node"] = str(sampler_ref[0])
+
+        # Trace guider input → CFGGuider (has cfg)
+        guider_ref = inputs.get("guider")
+        if isinstance(guider_ref, list) and len(guider_ref) >= 2:
+            guider_node = workflow.get(str(guider_ref[0]), {})
+            if guider_node.get("class_type") in ("CFGGuider", "DualCFGGuider", "BasicGuider"):
+                cfg_val = guider_node.get("inputs", {}).get("cfg")
+                cfg_resolved = _resolve_input(workflow, cfg_val)
+                if isinstance(cfg_resolved, (int, float)):
+                    entry["cfg"] = cfg_resolved
+                entry["_guider_node"] = str(guider_ref[0])
+
+        # Trace noise input → RandomNoise (has noise_seed)
+        noise_ref = inputs.get("noise")
+        if isinstance(noise_ref, list) and len(noise_ref) >= 2:
+            noise_node = workflow.get(str(noise_ref[0]), {})
+            if noise_node.get("class_type") == "RandomNoise":
+                seed_val = noise_node.get("inputs", {}).get("noise_seed")
+                seed_resolved = _resolve_input(workflow, seed_val)
+                if isinstance(seed_resolved, (int, float)):
+                    entry["seed"] = int(seed_resolved)
+                entry["_noise_node"] = str(noise_ref[0])
+
+        # Trace sigmas input → any node with steps/scheduler fields
+        sigmas_ref = inputs.get("sigmas")
+        if isinstance(sigmas_ref, list) and len(sigmas_ref) >= 2:
+            sigmas_node = workflow.get(str(sigmas_ref[0]), {})
+            sched_inputs = sigmas_node.get("inputs", {})
+            has_target = False
+            scheduler_val = sched_inputs.get("scheduler")
+            if isinstance(scheduler_val, str):
+                entry["scheduler"] = scheduler_val
+                has_target = True
+            steps_val = _resolve_input(workflow, sched_inputs.get("steps"))
+            if isinstance(steps_val, (int, float)):
+                entry["steps"] = int(steps_val)
+                has_target = True
+            if has_target:
+                entry["_sigmas_node"] = str(sigmas_ref[0])
+
+        # Build override map: tells frontend which node_id.field to target for each param
+        override_map: dict[str, str] = {}
+        if "_sampler_select_node" in entry:
+            override_map["sampler_name"] = f"{entry.pop('_sampler_select_node')}.sampler_name"
+        if "_guider_node" in entry:
+            override_map["cfg"] = f"{entry.pop('_guider_node')}.cfg"
+        if "_noise_node" in entry:
+            override_map["seed"] = f"{entry.pop('_noise_node')}.noise_seed"
+        if "_sigmas_node" in entry:
+            sigmas_id = entry.pop("_sigmas_node")
+            override_map["steps"] = f"{sigmas_id}.steps"
+            override_map["scheduler"] = f"{sigmas_id}.scheduler"
+        if override_map:
+            entry["override_map"] = override_map
+
+        samplers.append(entry)
+
     return samplers
 
 
@@ -1420,7 +1512,9 @@ async def run(request: Request) -> JSONResponse:
     if not body.get("lock_seed", False):
         ksamplers = _detect_ksamplers(workflow)
         for ks in ksamplers:
-            seed_key = f"{ks['node_id']}.seed"
+            # Use override_map for SamplerCustomAdvanced (targets RandomNoise.noise_seed)
+            om = ks.get("override_map", {})
+            seed_key = om.get("seed", f"{ks['node_id']}.seed")
             if seed_key not in overrides:  # don't override user-set seed
                 overrides[seed_key] = str(random.randint(0, 2**53))
 

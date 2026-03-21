@@ -33,7 +33,7 @@ cp .env.example .env
 uv run app.py
 ```
 
-The app starts a FastAPI backend on `:8000` and a Next.js frontend on `:3000`, then opens your browser automatically.
+The app starts a FastAPI backend on `:8000` and a Next.js frontend on `:3000` (configurable via `BACKEND_PORT` / `FRONTEND_PORT` env vars), then opens your browser automatically.
 
 ## Prerequisites
 
@@ -128,7 +128,7 @@ Blocks connect automatically based on compatible data types (text, image, video,
 
 | Block | Description |
 |-------|-------------|
-| **Prompt Writer** | Generate prompts using an LLM. Supports video and image modes with custom system prompts. Multiple user prompts supported — the pipeline iterates downstream once per generated prompt. |
+| **Prompt Writer** | Generate prompts using an LLM. Supports video and image modes with custom system prompts. **Idea generator**: describe a concept and generate multiple prompt variations (4–48) that are batched as a sweep axis in downstream ComfyUI Gen blocks. |
 | **I2V Prompt Writer** | Generate a video prompt from an input image using a vision LLM. Specialized for image-to-video transitions. |
 | **Upload Image** | Upload a local image file or provide a URL. |
 | **Video Loader** | Load videos from URLs, local paths, or file upload. |
@@ -137,7 +137,7 @@ Blocks connect automatically based on compatible data types (text, image, video,
 
 | Block | Description |
 |-------|-------------|
-| **ComfyUI Gen** | Run any ComfyUI workflow on RunPod serverless. Load workflows from JSON or extract from PNG metadata. Supports resolution, seed, prompt, and frame count overrides. Auto-detects LoRA loaders with per-LoRA enable/disable toggle, name swap, and strength sliders. **Automation mode**: sweep multiple values (samplers, schedulers, LoRAs, strengths, CFG, steps, prompts) with cartesian product — runs all combinations in parallel with a sliding window executor. **Missing model detection**: auto-detects missing models and offers one-click download to the endpoint. |
+| **ComfyUI Gen** | Run any ComfyUI workflow on RunPod serverless. Load workflows from JSON or extract from PNG metadata. Supports resolution, seed, prompt, and frame count overrides. Auto-detects KSampler nodes (including modular `SamplerCustomAdvanced` workflows) and shows their display names. Auto-detects LoRA loaders with per-LoRA enable/disable toggle, name swap, and strength sliders. **Automation mode**: sweep multiple values (samplers, schedulers, LoRAs, strengths, CFG, steps, prompts) with cartesian product — runs all combinations in parallel with configurable concurrency (1–10). **Missing model detection**: auto-detects missing models and offers one-click download to the endpoint. |
 
 ### Viewing
 
@@ -161,16 +161,19 @@ Blocks connect automatically based on compatible data types (text, image, video,
 
 ## Pipeline Features
 
-- **Tabs** — Work on multiple pipelines simultaneously. Double-click a tab to rename it.
+- **Tabs** — Work on multiple pipelines simultaneously. Double-click to rename, right-click for context menu (rename, duplicate, close).
+- **Duplicate tabs** — Clone a tab with all its block configuration via the context menu.
+- **Workspaces** — Save all open tabs as a workspace and restore them later from the nav bar.
 - **Parallel execution** — Run pipelines in multiple tabs at the same time. Each tab has independent run state and cancellation.
 - **Loop mode** — Run a pipeline endlessly until stopped. Click "Loop" instead of "Run" to auto-repeat. Stops automatically on error. Pipelines with Human-in-the-Loop blocks are ineligible.
 - **Job manager** — When 2+ pipelines are running, a floating panel appears showing each running tab's name, current block, and a per-tab stop button.
 - **Branching** — Fork a pipeline into multiple parallel chains from any block.
-- **Iterator blocks** — Blocks like Upload Image, Prompt Writer, and ComfyUI Gen can produce multiple outputs. The pipeline automatically loops downstream once per item, accumulating results across iterations.
+- **Iterator blocks** — Blocks like Upload Image and ComfyUI Gen can produce multiple outputs. The pipeline automatically loops downstream once per item, accumulating results across iterations.
 - **Continue mode** — After a run completes, add more blocks and click "Continue" to pick up where you left off.
-- **Save / Load** — Export pipelines as JSON files and reload them later via File menu.
+- **Save / Load** — Export pipelines as JSON files and reload them later via File menu. Rename or delete saved flows directly from the nav bar.
 - **Auto-fit** — Layout controls (auto-fit, expand all, reduce all) at the bottom of the canvas.
 - **Artifacts** — Browse run history with favorites, per-image metadata (synced with gallery navigation), and expandable sub-viewer outputs. Restore any past run as a new tab.
+- **Prompt library** — Save and reuse prompts with duplicate name detection (override or keep both).
 
 ## Project Structure
 
@@ -261,5 +264,4 @@ Make sure the upstream block has completed and produced video output before cont
 ## License
 
 [TBD]
-
 

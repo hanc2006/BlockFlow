@@ -76,12 +76,14 @@ interface NodeMapping {
 interface KSamplerInfo {
   node_id: string
   class_type: string
+  label?: string
   steps?: number
   cfg?: number
   seed?: number
   denoise?: number
   sampler_name?: string
   scheduler?: string
+  override_map?: Record<string, string>
 }
 
 interface TextOverrideInfo {
@@ -1747,86 +1749,63 @@ function ComfyGenBlock({
             </button>
           }
         >
-          {ksamplers.slice(0, 3).map((ks) => (
+          {ksamplers.slice(0, 3).map((ks) => {
+            const numericFields = [
+              { key: 'steps' as const, label: 'Steps', props: { type: 'number' as const } },
+              { key: 'cfg' as const, label: 'CFG', props: { type: 'number' as const, step: '0.1' } },
+              { key: 'denoise' as const, label: 'Denoise', props: { type: 'number' as const, step: '0.01', min: '0', max: '1' } },
+            ].filter((f) => ks[f.key] != null)
+            const selectFields = [
+              { key: 'sampler_name' as const, label: 'Sampler', options: availableSamplers, fallback: ks.sampler_name },
+              { key: 'scheduler' as const, label: 'Scheduler', options: availableSchedulers, fallback: ks.scheduler },
+            ].filter((f) => f.fallback)
+            if (numericFields.length === 0 && selectFields.length === 0) return null
+            return (
             <div key={ks.node_id} className="space-y-1">
               {ksamplers.length > 1 && (
-                <span className="text-[10px] text-muted-foreground">#{ks.node_id} {ks.class_type}</span>
+                <span className="text-[10px] text-muted-foreground">{ks.label || `#{ks.node_id} ${ks.class_type}`}</span>
               )}
-              <div className="grid grid-cols-3 gap-2">
-                <div className="space-y-0.5">
-                  <span className="text-[10px] text-muted-foreground">Steps</span>
+              {numericFields.length > 0 && (
+              <div className={`grid gap-2`} style={{ gridTemplateColumns: `repeat(${Math.min(numericFields.length, 3)}, 1fr)` }}>
+                {numericFields.map((f) => (
+                <div key={f.key} className="space-y-0.5">
+                  <span className="text-[10px] text-muted-foreground">{f.label}</span>
                   <AutoNumericInput
-                    type="number"
-                    value={ksamplerOverrides[ks.node_id]?.steps ?? ''}
-                    onChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], steps: v } }))}
-                    multiValues={autoNumeric[`${ks.node_id}.steps`] || []}
-                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ks.node_id}.steps`]: vals }))}
+                    {...f.props}
+                    value={ksamplerOverrides[ks.node_id]?.[f.key] ?? ''}
+                    onChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], [f.key]: v } }))}
+                    multiValues={autoNumeric[`${ks.node_id}.${f.key}`] || []}
+                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ks.node_id}.${f.key}`]: vals }))}
                     automateEnabled={automateEnabled}
-                    placeholder={ks.steps != null ? String(ks.steps) : '—'}
+                    placeholder={String(ks[f.key])}
                     className="h-7 text-xs"
                   />
                 </div>
-                <div className="space-y-0.5">
-                  <span className="text-[10px] text-muted-foreground">CFG</span>
-                  <AutoNumericInput
-                    type="number"
-                    step="0.1"
-                    value={ksamplerOverrides[ks.node_id]?.cfg ?? ''}
-                    onChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], cfg: v } }))}
-                    multiValues={autoNumeric[`${ks.node_id}.cfg`] || []}
-                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ks.node_id}.cfg`]: vals }))}
-                    automateEnabled={automateEnabled}
-                    placeholder={ks.cfg != null ? String(ks.cfg) : '—'}
-                    className="h-7 text-xs"
-                  />
-                </div>
-                <div className="space-y-0.5">
-                  <span className="text-[10px] text-muted-foreground">Denoise</span>
-                  <AutoNumericInput
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="1"
-                    value={ksamplerOverrides[ks.node_id]?.denoise ?? ''}
-                    onChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], denoise: v } }))}
-                    multiValues={autoNumeric[`${ks.node_id}.denoise`] || []}
-                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ks.node_id}.denoise`]: vals }))}
-                    automateEnabled={automateEnabled}
-                    placeholder={ks.denoise != null ? String(ks.denoise) : '—'}
-                    className="h-7 text-xs"
-                  />
-                </div>
+                ))}
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-0.5 min-w-0">
-                  <span className="text-[10px] text-muted-foreground">Sampler</span>
+              )}
+              {selectFields.length > 0 && (
+              <div className={`grid gap-2`} style={{ gridTemplateColumns: `repeat(${Math.min(selectFields.length, 2)}, 1fr)` }}>
+                {selectFields.map((f) => (
+                <div key={f.key} className="space-y-0.5 min-w-0">
+                  <span className="text-[10px] text-muted-foreground">{f.label}</span>
                   <AutoSelectMulti
-                    value={ksamplerOverrides[ks.node_id]?.sampler_name || ks.sampler_name || ''}
-                    onValueChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], sampler_name: v } }))}
-                    options={availableSamplers.length > 0 ? availableSamplers : ks.sampler_name ? [ks.sampler_name] : []}
-                    selectedValues={autoSelect[`${ks.node_id}.sampler_name`] || []}
-                    onSelectedChange={(vals) => setAutoSelect((prev) => ({ ...prev, [`${ks.node_id}.sampler_name`]: vals }))}
+                    value={ksamplerOverrides[ks.node_id]?.[f.key] || f.fallback || ''}
+                    onValueChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], [f.key]: v } }))}
+                    options={f.options.length > 0 ? f.options : f.fallback ? [f.fallback] : []}
+                    selectedValues={autoSelect[`${ks.node_id}.${f.key}`] || []}
+                    onSelectedChange={(vals) => setAutoSelect((prev) => ({ ...prev, [`${ks.node_id}.${f.key}`]: vals }))}
                     automateEnabled={automateEnabled}
-                    placeholder={ks.sampler_name || '—'}
+                    placeholder={f.fallback || '—'}
                     triggerClassName="h-7 text-xs"
                   />
                 </div>
-                <div className="space-y-0.5 min-w-0">
-                  <span className="text-[10px] text-muted-foreground">Scheduler</span>
-                  <AutoSelectMulti
-                    value={ksamplerOverrides[ks.node_id]?.scheduler || ks.scheduler || ''}
-                    onValueChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], scheduler: v } }))}
-                    options={availableSchedulers.length > 0 ? availableSchedulers : ks.scheduler ? [ks.scheduler] : []}
-                    selectedValues={autoSelect[`${ks.node_id}.scheduler`] || []}
-                    onSelectedChange={(vals) => setAutoSelect((prev) => ({ ...prev, [`${ks.node_id}.scheduler`]: vals }))}
-                    automateEnabled={automateEnabled}
-                    placeholder={ks.scheduler || '—'}
-                    triggerClassName="h-7 text-xs"
-                  />
-                </div>
+                ))}
               </div>
+              )}
             </div>
-          ))}
+            )
+          })}
           {ksamplers.length > 3 && (
             <p className="text-[10px] text-yellow-500">
               {ksamplers.length} KSamplers detected — only showing first 3
