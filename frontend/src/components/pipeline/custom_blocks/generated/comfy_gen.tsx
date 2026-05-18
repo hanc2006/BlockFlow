@@ -1989,25 +1989,16 @@ function ComfyGenBlock({
               </div>
               <div className="flex items-center gap-2">
                 <div className="min-w-0 flex-1">
-                  {availableLoras.length > 0 ? (
-                    <Select value={a.lora_name || ''} onValueChange={(v) => updateAdded({ lora_name: v })}>
-                      <SelectTrigger className="h-7 text-xs">
-                        <SelectValue placeholder="Pick a LoRA..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {availableLoras.map((opt) => (
-                          <SelectItem key={opt} value={opt} className="text-xs">{opt}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <Input
-                      value={a.lora_name}
-                      onChange={(e) => updateAdded({ lora_name: e.target.value })}
-                      placeholder="lora_name.safetensors"
-                      className="h-7 text-xs"
-                    />
-                  )}
+                  <AutoSelectMulti
+                    value={a.lora_name || ''}
+                    onValueChange={(v) => updateAdded({ lora_name: v })}
+                    options={availableLoras}
+                    selectedValues={[]}
+                    onSelectedChange={() => {}}
+                    automateEnabled={false}
+                    placeholder="Pick a LoRA..."
+                    triggerClassName="h-7 text-xs"
+                  />
                 </div>
               </div>
               <div className="space-y-1">
