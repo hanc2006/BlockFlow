@@ -204,6 +204,81 @@ describe('parseDirectorPromptsJson', () => {
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.descriptions).toEqual([''])
   })
+
+  it('string entries get empty loras array', () => {
+    const r = parseDirectorPromptsJson(JSON.stringify({ prompts: ['x', 'y'] }), 'x.json')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.loras).toEqual([[], []])
+  })
+
+  it('accepts per-prompt loras with full LoraEntry fields', () => {
+    const r = parseDirectorPromptsJson(
+      JSON.stringify({
+        prompts: [{
+          text: 'x',
+          loras: [
+            { name: 'a.safetensors', branch: 'high', strength: 0.8 },
+            { name: 'b.safetensors', branch: 'low', strength: 0.5 },
+          ],
+        }],
+      }),
+      'x.json',
+    )
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.loras).toEqual([[
+        { name: 'a.safetensors', branch: 'high', strength: 0.8 },
+        { name: 'b.safetensors', branch: 'low', strength: 0.5 },
+      ]])
+    }
+  })
+
+  it('defaults loras branch to "both" and strength to 1.0', () => {
+    const r = parseDirectorPromptsJson(
+      JSON.stringify({ prompts: [{ text: 'x', loras: [{ name: 'a.safetensors' }] }] }),
+      'x.json',
+    )
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.loras).toEqual([[{ name: 'a.safetensors', branch: 'both', strength: 1.0 }]])
+    }
+  })
+
+  it('rejects lora without name', () => {
+    const r = parseDirectorPromptsJson(
+      JSON.stringify({ prompts: [{ text: 'x', loras: [{ branch: 'high', strength: 1 }] }] }),
+      'x.json',
+    )
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/name/i)
+  })
+
+  it('rejects invalid branch value', () => {
+    const r = parseDirectorPromptsJson(
+      JSON.stringify({ prompts: [{ text: 'x', loras: [{ name: 'a', branch: 'middle' }] }] }),
+      'x.json',
+    )
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/branch/i)
+  })
+
+  it('rejects non-array loras', () => {
+    const r = parseDirectorPromptsJson(
+      JSON.stringify({ prompts: [{ text: 'x', loras: 'a.safetensors' }] }),
+      'x.json',
+    )
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/loras/i)
+  })
+
+  it('empty loras array allowed', () => {
+    const r = parseDirectorPromptsJson(
+      JSON.stringify({ prompts: [{ text: 'x', loras: [] }] }),
+      'x.json',
+    )
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.loras).toEqual([[]])
+  })
 })
 
 describe('secondsToFrames', () => {

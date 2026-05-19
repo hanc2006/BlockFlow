@@ -42,6 +42,7 @@ import {
 import type { LoraEntry } from '@/lib/types'
 import { DirectorLoadJsonButton } from '@/components/pipeline/director-load-json-button'
 import { DirectorPromptLengthStepper } from '@/components/pipeline/director-prompt-length-stepper'
+import { DirectorPromptLorasPopover } from '@/components/pipeline/director-prompt-loras-popover'
 import { secondsToFrames } from '@/lib/director-prompts-json'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { findBlockInTree } from '@/lib/pipeline/tree-utils'
@@ -201,6 +202,10 @@ function Wan22ImageToVideoBlock({
     `block_${blockId}_director_prompt_descriptions`,
     ['', ''],
   )
+  const [directorPromptLoras, setDirectorPromptLoras] = useSessionState<LoraEntry[][]>(
+    `block_${blockId}_director_prompt_loras`,
+    [[], []],
+  )
   const [useBlockFramesOverride, setUseBlockFramesOverride] = useSessionState<boolean>(
     `block_${blockId}_director_use_block_frames`,
     false,
@@ -314,10 +319,10 @@ function Wan22ImageToVideoBlock({
 
   useEffect(() => {
     registerExecute(async (freshInputs) => {
-      type RunUnit = { prompt: string; frames: number }
+      type RunUnit = { prompt: string; frames: number; extraLoras: LoraEntry[] }
       let runUnits: RunUnit[]
       if (isPromptWired) {
-        runUnits = normalizePrompts(freshInputs.prompt).map((p) => ({ prompt: p, frames }))
+        runUnits = normalizePrompts(freshInputs.prompt).map((p) => ({ prompt: p, frames, extraLoras: [] }))
       } else if (directorMode) {
         runUnits = directorPrompts
           .map((p, idx) => ({ prompt: p.trim(), idx }))
@@ -325,10 +330,11 @@ function Wan22ImageToVideoBlock({
           .map(({ prompt, idx }) => {
             const len = directorPromptLengths[idx]
             const f = !useBlockFramesOverride && len !== null ? secondsToFrames(len) : frames
-            return { prompt, frames: f }
+            const extras = (directorPromptLoras[idx] ?? []).filter((l) => l.name && l.name !== '__none__')
+            return { prompt, frames: f, extraLoras: extras }
           })
       } else {
-        runUnits = normalizePrompts(localPrompt).map((p) => ({ prompt: p, frames }))
+        runUnits = normalizePrompts(localPrompt).map((p) => ({ prompt: p, frames, extraLoras: [] }))
       }
       const runImage = isImageWired
         ? asImageInput(freshInputs.image)
@@ -350,6 +356,7 @@ function Wan22ImageToVideoBlock({
       const imageValue = runImage.trim()
       const submissions = await Promise.allSettled(
         runUnits.map(async (unit, idx) => {
+          const effectiveLoras = [...runLoras, ...unit.extraLoras]
           const payload: Wan22I2vPayload = {
             endpoint_id: endpointId,
             task_type: 'i2v',
@@ -362,7 +369,7 @@ function Wan22ImageToVideoBlock({
             parallel_count: 1,
             seed_mode: seedMode,
             seed: seedMode === 'fixed' ? seed + idx : seed,
-            loras: runLoras.length > 0 ? runLoras : undefined,
+            loras: effectiveLoras.length > 0 ? effectiveLoras : undefined,
           }
 
           const res = await submitWan22I2vJob(payload)
@@ -507,24 +514,26 @@ function Wan22ImageToVideoBlock({
         </button>
         {promptExpanded && (
         <>
-        <div className="flex items-center justify-end">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-muted-foreground">Replace with</span>
-            <Select
-              value={promptBinding?.selectedSourceValue || MANUAL_SOURCE}
-              onValueChange={(sourceValue) => promptBinding?.setSelectedSource?.(sourceValue)}
-            >
-              <SelectTrigger className="h-7 min-w-[160px] text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(promptBinding?.sourceOptions ?? []).map((option) => (
-                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        {!directorMode && (
+          <div className="flex items-center justify-end">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-muted-foreground">Replace with</span>
+              <Select
+                value={promptBinding?.selectedSourceValue || MANUAL_SOURCE}
+                onValueChange={(sourceValue) => promptBinding?.setSelectedSource?.(sourceValue)}
+              >
+                <SelectTrigger className="h-7 min-w-[160px] text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(promptBinding?.sourceOptions ?? []).map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-        </div>
+        )}
         {isPromptWired ? (
           <div className="min-h-[80px] rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 flex flex-col gap-1.5">
             <div className="flex items-center gap-1.5">
@@ -555,6 +564,7 @@ function Wan22ImageToVideoBlock({
                     setLoadedJsonName('')
                     setDirectorPromptLengths(directorPrompts.map(() => null))
                     setDirectorPromptDescriptions(directorPrompts.map(() => ''))
+                    setDirectorPromptLoras(directorPrompts.map(() => []))
                     setUseBlockFramesOverride(false)
                   }
                 }}
@@ -563,13 +573,15 @@ function Wan22ImageToVideoBlock({
             {directorMode && (
               <div className="flex items-center justify-between mb-1">
                 <DirectorLoadJsonButton
-                  onLoaded={(name, prompts, lengths, descriptions) => {
+                  onLoaded={(name, prompts, lengths, descriptions, loras) => {
                     const ps = prompts.length > 0 ? prompts : ['', '']
                     const ls = prompts.length > 0 ? lengths : [null, null]
                     const ds = prompts.length > 0 ? descriptions : ['', '']
+                    const lrs = prompts.length > 0 ? loras : [[], []]
                     setDirectorPrompts(ps)
                     setDirectorPromptLengths(ls)
                     setDirectorPromptDescriptions(ds)
+                    setDirectorPromptLoras(lrs)
                     setLoadedJsonName(name)
                     setUseBlockFramesOverride(false)
                   }}
@@ -586,21 +598,22 @@ function Wan22ImageToVideoBlock({
             )}
             {directorMode ? (
               <div className="space-y-1.5 min-w-0">
-                {directorPrompts.map((p, idx) => (
+                {directorPrompts.map((p, idx) => {
+                  const description = directorPromptDescriptions[idx] ?? ''
+                  return (
                   <div key={idx} className="flex items-start gap-1.5 min-w-0">
-                    <span className="mt-1.5 w-4 text-[10px] text-muted-foreground text-right shrink-0">{idx + 1}.</span>
-                    <div className="flex-1 min-w-0 flex flex-col gap-1">
-                      <Input
-                        value={directorPromptDescriptions[idx] ?? ''}
-                        onChange={(e) => {
-                          const arr = [...directorPromptDescriptions]
-                          arr[idx] = e.target.value.slice(0, 50)
-                          setDirectorPromptDescriptions(arr)
-                        }}
-                        maxLength={50}
-                        placeholder="Short description (optional)"
-                        className="h-5 text-[10px] italic text-muted-foreground px-1.5 bg-transparent"
-                      />
+                    <div className="flex flex-col items-end shrink-0 pt-1">
+                      <span className="w-4 text-[10px] text-muted-foreground text-right">{idx + 1}.</span>
+                    </div>
+                    <div className="flex-1 min-w-0 flex flex-col">
+                      {description && (
+                        <span
+                          className="text-[10px] italic text-muted-foreground pl-1 pb-1 truncate"
+                          title={description}
+                        >
+                          {description}
+                        </span>
+                      )}
                       <Textarea
                         value={p}
                         onChange={(e) => {
@@ -621,6 +634,15 @@ function Wan22ImageToVideoBlock({
                       }}
                       fallbackFrames={frames}
                     />
+                    <DirectorPromptLorasPopover
+                      promptIndex={idx}
+                      value={directorPromptLoras[idx] ?? []}
+                      onChange={(next) => {
+                        const arr = [...directorPromptLoras]
+                        arr[idx] = next
+                        setDirectorPromptLoras(arr)
+                      }}
+                    />
                     <div className="flex flex-col gap-0.5 shrink-0">
                       <button
                         type="button"
@@ -635,6 +657,9 @@ function Wan22ImageToVideoBlock({
                           const descs = [...directorPromptDescriptions]
                           ;[descs[idx - 1], descs[idx]] = [descs[idx], descs[idx - 1]]
                           setDirectorPromptDescriptions(descs)
+                          const lrs = [...directorPromptLoras]
+                          ;[lrs[idx - 1], lrs[idx]] = [lrs[idx], lrs[idx - 1]]
+                          setDirectorPromptLoras(lrs)
                         }}
                         className="h-4 w-5 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
                         title="Move up"
@@ -654,6 +679,9 @@ function Wan22ImageToVideoBlock({
                           const descs = [...directorPromptDescriptions]
                           ;[descs[idx + 1], descs[idx]] = [descs[idx], descs[idx + 1]]
                           setDirectorPromptDescriptions(descs)
+                          const lrs = [...directorPromptLoras]
+                          ;[lrs[idx + 1], lrs[idx]] = [lrs[idx], lrs[idx + 1]]
+                          setDirectorPromptLoras(lrs)
                         }}
                         className="h-4 w-5 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
                         title="Move down"
@@ -667,6 +695,7 @@ function Wan22ImageToVideoBlock({
                           setDirectorPrompts(directorPrompts.filter((_, i) => i !== idx))
                           setDirectorPromptLengths(directorPromptLengths.filter((_, i) => i !== idx))
                           setDirectorPromptDescriptions(directorPromptDescriptions.filter((_, i) => i !== idx))
+                          setDirectorPromptLoras(directorPromptLoras.filter((_, i) => i !== idx))
                         }}
                         className="h-4 w-5 text-[10px] leading-none text-red-400 hover:text-red-300 disabled:opacity-30"
                         title="Remove"
@@ -675,7 +704,8 @@ function Wan22ImageToVideoBlock({
                       </button>
                     </div>
                   </div>
-                ))}
+                  )
+                })}
                 <Button
                   type="button"
                   variant="outline"
@@ -685,6 +715,7 @@ function Wan22ImageToVideoBlock({
                     setDirectorPrompts([...directorPrompts, ''])
                     setDirectorPromptLengths([...directorPromptLengths, null])
                     setDirectorPromptDescriptions([...directorPromptDescriptions, ''])
+                    setDirectorPromptLoras([...directorPromptLoras, []])
                   }}
                 >
                   + Add prompt
