@@ -1,5 +1,14 @@
+import type { LoraEntry } from './types'
+
 export type DirectorPromptsParseResult =
-  | { ok: true; name: string; prompts: string[]; lengths: (number | null)[]; descriptions: string[] }
+  | {
+      ok: true
+      name: string
+      prompts: string[]
+      lengths: (number | null)[]
+      descriptions: string[]
+      loras: LoraEntry[][]
+    }
   | { ok: false; error: string }
 
 export const DIRECTOR_DESCRIPTION_MAX = 50
@@ -22,6 +31,25 @@ function clampLength(value: number): number {
   return Math.max(DIRECTOR_LENGTH_MIN, Math.min(DIRECTOR_LENGTH_MAX, Math.round(value)))
 }
 
+function parseLoraEntry(raw: unknown, idx: number, j: number): LoraEntry | string {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return `loras[${j}] at prompt index ${idx} must be an object`
+  }
+  const r = raw as Record<string, unknown>
+  if (typeof r.name !== 'string' || !r.name.trim()) {
+    return `loras[${j}] at prompt index ${idx} must have a string "name"`
+  }
+  const branch = r.branch ?? 'both'
+  if (branch !== 'high' && branch !== 'low' && branch !== 'both') {
+    return `loras[${j}] at prompt index ${idx} "branch" must be "high", "low", or "both"`
+  }
+  const strengthRaw = r.strength ?? 1.0
+  if (typeof strengthRaw !== 'number' || !Number.isFinite(strengthRaw)) {
+    return `loras[${j}] at prompt index ${idx} "strength" must be a number`
+  }
+  return { name: r.name, branch, strength: strengthRaw }
+}
+
 export function parseDirectorPromptsJson(text: string, filename: string): DirectorPromptsParseResult {
   let data: unknown
   try {
@@ -42,12 +70,14 @@ export function parseDirectorPromptsJson(text: string, filename: string): Direct
   const prompts: string[] = []
   const lengths: (number | null)[] = []
   const descriptions: string[] = []
+  const loras: LoraEntry[][] = []
   for (let i = 0; i < obj.prompts.length; i++) {
     const entry = obj.prompts[i]
     if (typeof entry === 'string') {
       prompts.push(entry)
       lengths.push(null)
       descriptions.push('')
+      loras.push([])
       continue
     }
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
@@ -73,6 +103,18 @@ export function parseDirectorPromptsJson(text: string, filename: string): Direct
     } else {
       descriptions.push('')
     }
+    const perPromptLoras: LoraEntry[] = []
+    if ('loras' in e && e.loras !== undefined && e.loras !== null) {
+      if (!Array.isArray(e.loras)) {
+        return { ok: false, error: `Prompt "loras" at index ${i} must be an array` }
+      }
+      for (let j = 0; j < e.loras.length; j++) {
+        const result = parseLoraEntry(e.loras[j], i, j)
+        if (typeof result === 'string') return { ok: false, error: result }
+        perPromptLoras.push(result)
+      }
+    }
+    loras.push(perPromptLoras)
     prompts.push(e.text)
   }
   let name: string
@@ -84,5 +126,5 @@ export function parseDirectorPromptsJson(text: string, filename: string): Direct
   } else {
     name = filenameStem(filename)
   }
-  return { ok: true, name, prompts, lengths, descriptions }
+  return { ok: true, name, prompts, lengths, descriptions, loras }
 }
