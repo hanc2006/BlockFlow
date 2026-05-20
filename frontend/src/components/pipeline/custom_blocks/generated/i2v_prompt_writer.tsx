@@ -331,11 +331,6 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
         setOutput('prompt', promptTexts)
       }
 
-      // Forward images so downstream blocks can pair prompt[i] with image[i].
-      // When num_prompts > 1, expand each input image N times to match the prompts array length.
-      const pairedImages = prompts.map((p) => runImages[p.idx])
-      setOutput('image', pairedImages.length === 1 ? pairedImages[0] : pairedImages)
-
       if (failures.length > 0) {
         const detail = failures.map((f) => `image ${f.idx + 1}: ${f.error}`).join('; ')
         const msg = `${prompts.length}/${totalJobs} done, ${failures.length} failed — ${detail}`
@@ -499,7 +494,7 @@ export const blockDef: BlockDef = {
   canStart: true,
   starterPrereqs: ['uploadImageToTmpfiles'],
   inputs: [{ name: 'image', kind: PORT_IMAGE, required: true }],
-  outputs: [{ name: 'prompt', kind: PORT_TEXT }, { name: 'image', kind: PORT_IMAGE }],
+  outputs: [{ name: 'prompt', kind: PORT_TEXT }],
   configKeys: ['local_settings', 'user_prompt', 'num_prompts', 'target_image_idx', 'output'],
   component: I2VPromptWriterBlock,
 }
