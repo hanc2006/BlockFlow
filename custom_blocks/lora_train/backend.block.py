@@ -506,13 +506,18 @@ def _run_training(job_id: str, api_key: str, dataset_dir: Path, trigger_word: st
                 })
                 return
             if status_str in ("FAILED", "CANCELLED", "TIMED_OUT"):
-                err = ""
-                if isinstance(output, dict):
-                    err = str(output.get("error") or output.get("message") or "")
-                elif isinstance(output, str):
-                    err = output
+                # RunPod can stash the real failure in three places:
+                #   - top-level `error` (most trainer crashes land here)
+                #   - output.error / output.message (structured handler errors)
+                #   - output as a bare string
+                err = str(data.get("error") or "").strip()
+                if not err:
+                    if isinstance(output, dict):
+                        err = str(output.get("error") or output.get("message") or "")
+                    elif isinstance(output, str):
+                        err = output
                 _set(job_id, status="FAILED", error=err or status_str, ended_at=time.time())
-                _append_log(job_id, f"Training {status_str}: {err}")
+                _append_log(job_id, f"Training {status_str}: {err[:400]}")
                 return
 
             time.sleep(POLL_INTERVAL_SEC)
