@@ -590,15 +590,16 @@ def list_datasets() -> JSONResponse:
         for folder in sorted(DATASETS_DIR.iterdir()):
             if not folder.is_dir():
                 continue
-            imgs = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
+            imgs = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
             captions = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".txt"]
-            thumb = imgs[0] if imgs else None
+            thumb_urls = [f"/outputs/datasets/{folder.name}/{p.name}" for p in imgs[:4]]
             out.append({
                 "id": folder.name,
                 "name": folder.name,
                 "image_count": len(imgs),
                 "caption_count": len(captions),
-                "thumb_url": f"/outputs/datasets/{folder.name}/{thumb.name}" if thumb else None,
+                "thumb_url": thumb_urls[0] if thumb_urls else None,
+                "thumb_urls": thumb_urls,
             })
     return JSONResponse({"ok": True, "datasets": out})
 

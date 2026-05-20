@@ -39,6 +39,7 @@ interface DatasetListEntry {
   image_count: number
   caption_count: number
   thumb_url: string | null
+  thumb_urls?: string[]
 }
 
 type LoraResult = { filename: string; url: string; noise_variant: string }
@@ -326,11 +327,33 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
               <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Pick an on-disk dataset..." /></SelectTrigger>
               <SelectContent>
                 {datasets.length === 0 && <SelectItem value="__none__" disabled className="text-xs">No datasets in output/datasets/</SelectItem>}
-                {datasets.map((d) => (
-                  <SelectItem key={d.id} value={d.id} className="text-xs">
-                    {d.name} ({d.image_count} img{d.caption_count ? `, ${d.caption_count} cap` : ''})
-                  </SelectItem>
-                ))}
+                {datasets.map((d) => {
+                  const thumbs = (d.thumb_urls && d.thumb_urls.length > 0)
+                    ? d.thumb_urls
+                    : (d.thumb_url ? [d.thumb_url] : [])
+                  return (
+                    <SelectItem key={d.id} value={d.id} className="text-xs">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {thumbs.length > 0 && (
+                          <div className="flex gap-0.5 shrink-0">
+                            {thumbs.slice(0, 4).map((u, i) => (
+                              <img
+                                key={i}
+                                src={u}
+                                alt=""
+                                className="h-5 w-5 rounded-sm object-cover bg-muted/40"
+                                loading="lazy"
+                              />
+                            ))}
+                          </div>
+                        )}
+                        <span className="truncate">
+                          {d.name} ({d.image_count} img{d.caption_count ? `, ${d.caption_count} cap` : ''})
+                        </span>
+                      </div>
+                    </SelectItem>
+                  )
+                })}
               </SelectContent>
             </Select>
             <p className="text-[10px] text-muted-foreground">Or connect a Dataset Create block upstream.</p>
