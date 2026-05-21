@@ -21,6 +21,11 @@ import {
   setCredential,
   setEndpoint,
   validateService,
+  wizardAttach,
+  wizardHealth,
+  wizardPreflight,
+  wizardProvision,
+  wizardTiers,
 } from './client'
 
 type MockResponse = {
@@ -307,5 +312,193 @@ describe('validateService', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(validateService('foo')).rejects.toThrow(/no validator available/)
+  })
+})
+
+// === wizard =================================================================
+
+describe('wizardPreflight', () => {
+  test('returns {ready, missing} on success', async () => {
+    const fetchMock = mockFetch([
+      { body: JSON.stringify({ ready: false, missing: ['runpod_api_key', 'r2_bucket'] }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await wizardPreflight()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/wizard/comfygen/preflight',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result).toEqual({ ready: false, missing: ['runpod_api_key', 'r2_bucket'] })
+  })
+
+  test('returns {ready: true, missing: []} when all creds present', async () => {
+    const fetchMock = mockFetch([{ body: JSON.stringify({ ready: true, missing: [] }) }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await wizardPreflight()
+    expect(result.ready).toBe(true)
+    expect(result.missing).toEqual([])
+  })
+})
+
+describe('wizardTiers', () => {
+  test('returns the list of tiers in canonical order', async () => {
+    const tiers = [
+      { id: 'budget', name: 'Budget', gpu_ids: ['NVIDIA GeForce RTX 5090'], datacenter: 'EU-RO-1', label: 'RTX 5090 (32GB)', region: 'Europe — Romania' },
+      { id: 'recommended', name: 'Recommended', gpu_ids: ['NVIDIA RTX PRO 6000 Blackwell Server Edition'], datacenter: 'EUR-IS-1', label: 'RTX PRO 6000', region: 'Europe — Iceland' },
+      { id: 'performance', name: 'Performance', gpu_ids: ['NVIDIA H100 NVL'], datacenter: 'US-KS-2', label: 'H100', region: 'US — Kansas' },
+    ]
+    const fetchMock = mockFetch([{ body: JSON.stringify({ tiers }) }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await wizardTiers()
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/wizard/comfygen/tiers',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result.map((t) => t.id)).toEqual(['budget', 'recommended', 'performance'])
+    expect(result[0].gpu_ids).toEqual(['NVIDIA GeForce RTX 5090'])
+  })
+})
+
+describe('wizardProvision', () => {
+  test('POSTs the input + returns the provisioning result', async () => {
+    const fetchMock = mockFetch([
+      {
+        body: JSON.stringify({
+          endpoint_id: 'ep_x',
+          template_id: 'tmpl_x',
+          template_name: 'blockflow-comfygen-x-template-x',
+          volume_id: 'vol_x',
+          name: 'blockflow-comfygen-x',
+          tier: 'budget',
+          status: 'provisioning',
+        }),
+      },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await wizardProvision({ tier: 'budget', volume_size_gb: 200, max_workers: 3 })
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/wizard/comfygen/provision')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({
+      tier: 'budget',
+      volume_size_gb: 200,
+      max_workers: 3,
+    })
+    expect(result.endpoint_id).toBe('ep_x')
+    expect(result.template_name).toBe('blockflow-comfygen-x-template-x')
+    expect(result.status).toBe('provisioning')
+  })
+
+  test('omits undefined fields from the body', async () => {
+    const fetchMock = mockFetch([
+      {
+        body: JSON.stringify({
+          endpoint_id: 'ep_y', template_id: 't', template_name: 'n', volume_id: 'v',
+          name: 'n', tier: 'budget', status: 'provisioning',
+        }),
+      },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await wizardProvision({ tier: 'budget' })
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const body = JSON.parse(init.body as string)
+    expect(body).toEqual({ tier: 'budget' })
+    expect('volume_size_gb' in body).toBe(false)
+    expect('max_workers' in body).toBe(false)
+  })
+
+  test('throws when backend returns 400 (e.g. missing creds)', async () => {
+    const fetchMock = mockFetch([
+      { status: 400, body: JSON.stringify({ detail: "missing required credentials in Settings: ['runpod_api_key']" }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(wizardProvision({ tier: 'budget' })).rejects.toThrow(/runpod_api_key/)
+  })
+
+  test('throws when backend returns 500 (provisioning failed)', async () => {
+    const fetchMock = mockFetch([
+      { status: 500, body: JSON.stringify({ detail: 'RunPod error: quota exceeded' }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(wizardProvision({ tier: 'budget' })).rejects.toThrow(/quota/)
+  })
+})
+
+describe('wizardAttach', () => {
+  test('POSTs endpoint_id + optional volume_id', async () => {
+    const fetchMock = mockFetch([
+      {
+        body: JSON.stringify({
+          type: 'comfygen', endpoint_id: 'ep_existing', volume_id: 'vol_existing',
+          template_id: null, template_name: null, gpu_tier: null,
+          volume_size_gb: null, max_workers: null, provisioned_at: null,
+        }),
+      },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await wizardAttach('ep_existing', 'vol_existing')
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/wizard/comfygen/attach')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({
+      endpoint_id: 'ep_existing',
+      volume_id: 'vol_existing',
+    })
+    expect(result.endpoint_id).toBe('ep_existing')
+  })
+
+  test('omits volume_id when not provided', async () => {
+    const fetchMock = mockFetch([{ body: JSON.stringify({ type: 'comfygen', endpoint_id: 'ep_x', volume_id: null, template_id: null, gpu_tier: null, volume_size_gb: null, max_workers: null, provisioned_at: null }) }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await wizardAttach('ep_x')
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body).toEqual({ endpoint_id: 'ep_x' })
+  })
+
+  test('throws when the attach validation fails (400)', async () => {
+    const fetchMock = mockFetch([
+      { status: 400, body: JSON.stringify({ detail: 'could not reach endpoint ep_bad: HTTP 404' }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(wizardAttach('ep_bad')).rejects.toThrow(/could not reach/)
+  })
+})
+
+describe('wizardHealth', () => {
+  test('returns the worker counts on 200', async () => {
+    const workers = { ready: 1, idle: 0, running: 0, throttled: 0, initializing: 0 }
+    const fetchMock = mockFetch([{ body: JSON.stringify({ workers }) }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await wizardHealth('ep_abc')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/wizard/comfygen/health/ep_abc',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result).toEqual({ workers })
+  })
+
+  test('throws on upstream RunPod error (502)', async () => {
+    const fetchMock = mockFetch([
+      { status: 502, body: JSON.stringify({ detail: 'upstream RunPod error: network error: timeout' }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(wizardHealth('ep_x')).rejects.toThrow(/upstream/)
   })
 })

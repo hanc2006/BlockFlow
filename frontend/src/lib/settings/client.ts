@@ -23,6 +23,7 @@ export type EndpointRecord = {
   endpoint_id: string
   volume_id: string | null
   template_id: string | null
+  template_name: string | null
   gpu_tier: string | null
   volume_size_gb: number | null
   max_workers: number | null
@@ -145,4 +146,104 @@ export async function validateService(service: string): Promise<ValidationResult
   const res = await fetch(`/api/settings/validate/${encodeURIComponent(service)}`, { method: 'POST' })
   await _throwIfNonOk(res)
   return (await res.json()) as ValidationResult
+}
+
+// === wizard (ComfyGen) ======================================================
+
+export type TierId = 'budget' | 'recommended' | 'performance'
+
+export type WizardTier = {
+  id: TierId
+  name: string
+  gpu_ids: string[]
+  datacenter: string
+  label: string
+  region: string
+}
+
+export type WizardPreflight = {
+  ready: boolean
+  missing: string[]
+}
+
+export type WizardProvisionInput = {
+  tier?: TierId
+  volume_size_gb?: number
+  max_workers?: number
+  name?: string
+}
+
+export type WizardProvisionResult = {
+  endpoint_id: string
+  template_id: string
+  template_name: string
+  volume_id: string
+  name: string
+  tier: string
+  status: string
+}
+
+export type WorkerCounts = {
+  ready: number
+  idle: number
+  running: number
+  throttled: number
+  initializing: number
+  unhealthy?: number
+}
+
+export type EndpointHealth = {
+  workers: WorkerCounts
+}
+
+export async function wizardPreflight(): Promise<WizardPreflight> {
+  const res = await fetch('/api/wizard/comfygen/preflight', { method: 'GET' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as WizardPreflight
+}
+
+export async function wizardTiers(): Promise<WizardTier[]> {
+  const res = await fetch('/api/wizard/comfygen/tiers', { method: 'GET' })
+  await _throwIfNonOk(res)
+  const body = await res.json()
+  return body.tiers as WizardTier[]
+}
+
+export async function wizardProvision(input: WizardProvisionInput): Promise<WizardProvisionResult> {
+  // Strip undefined fields so the JSON body matches user intent (avoids
+  // sending e.g. `volume_size_gb: undefined` which JSON.stringify drops anyway
+  // but is clearer for tests).
+  const body: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(input)) {
+    if (v !== undefined) body[k] = v
+  }
+  const res = await fetch('/api/wizard/comfygen/provision', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  await _throwIfNonOk(res)
+  return (await res.json()) as WizardProvisionResult
+}
+
+export async function wizardAttach(endpoint_id: string, volume_id?: string): Promise<EndpointRecord> {
+  const body: Record<string, unknown> = { endpoint_id }
+  if (volume_id !== undefined) body.volume_id = volume_id
+
+  const res = await fetch('/api/wizard/comfygen/attach', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  await _throwIfNonOk(res)
+  return (await res.json()) as EndpointRecord
+}
+
+export async function wizardHealth(endpoint_id: string): Promise<EndpointHealth> {
+  const res = await fetch(
+    `/api/wizard/comfygen/health/${encodeURIComponent(endpoint_id)}`,
+    { method: 'GET' },
+  )
+  await _throwIfNonOk(res)
+  return (await res.json()) as EndpointHealth
 }
