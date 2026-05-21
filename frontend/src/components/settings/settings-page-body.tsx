@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from 'next/navigation'
 
+import { CredentialsTab } from './credentials-tab'
 import { SETTINGS_TABS, SettingsLayout, type SettingsTabId } from './layout'
 
 function isSettingsTab(value: string | null): value is SettingsTabId {
@@ -22,7 +23,7 @@ export function SettingsPageBody() {
 
   return (
     <SettingsLayout activeTab={activeTab} onTabChange={setTab}>
-      {activeTab === 'credentials' && <Placeholder section="Credentials" stage="Stage 4" />}
+      {activeTab === 'credentials' && <CredentialsTab />}
       {activeTab === 'endpoints' && <Placeholder section="Endpoints" stage="Stage 5" />}
       {activeTab === 'storage' && (
         <Placeholder
