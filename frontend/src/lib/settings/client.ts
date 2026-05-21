@@ -264,3 +264,55 @@ export async function wizardTeardown(): Promise<WizardTeardownResult> {
   await _throwIfNonOk(res)
   return (await res.json()) as WizardTeardownResult
 }
+
+// === presets (sgs-ui-wisp-las.3 Stage A) ====================================
+
+export type PresetManifestEntry = {
+  id: string
+  name: string
+  description?: string
+  comfygen_min_version: string
+  tags?: string[]
+  disk_size_estimate_gb: number
+  gpu_tier_hint?: 'budget' | 'recommended' | 'performance' | string
+  preset_url: string
+}
+
+export type PresetManifest = {
+  manifest_version: number
+  presets: PresetManifestEntry[]
+  cache?: 'stale'
+  fetch_error?: string
+}
+
+export type InstalledPresetSummary = {
+  preset_id: string
+  version: string
+  disk_size_gb: number | null
+  installed_at: string
+  updated_at: string
+}
+
+export type InstalledPresetDetail = InstalledPresetSummary & {
+  workflow_json: Record<string, unknown>
+}
+
+export async function getPresetManifest(opts: { refresh?: boolean } = {}): Promise<PresetManifest> {
+  const qs = opts.refresh ? '?refresh=1' : ''
+  const res = await fetch(`/api/presets/manifest${qs}`, { method: 'GET' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as PresetManifest
+}
+
+export async function listInstalledPresets(): Promise<InstalledPresetSummary[]> {
+  const res = await fetch('/api/presets/installed', { method: 'GET' })
+  await _throwIfNonOk(res)
+  const body = await res.json()
+  return body.installed as InstalledPresetSummary[]
+}
+
+export async function getInstalledPreset(presetId: string): Promise<InstalledPresetDetail> {
+  const res = await fetch(`/api/presets/installed/${encodeURIComponent(presetId)}`, { method: 'GET' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as InstalledPresetDetail
+}

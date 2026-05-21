@@ -21,6 +21,9 @@ import {
   setCredential,
   setEndpoint,
   validateService,
+  getInstalledPreset,
+  getPresetManifest,
+  listInstalledPresets,
   wizardAttach,
   wizardHealth,
   wizardPreflight,
@@ -551,5 +554,141 @@ describe('wizardTeardown', () => {
 
     const result = await wizardTeardown()
     expect(result.warnings).toContain('no template_name in Settings')
+  })
+})
+
+// === presets (Stage A) ======================================================
+
+describe('getPresetManifest', () => {
+  test('GETs the manifest endpoint + returns parsed body', async () => {
+    const manifest = {
+      manifest_version: 1,
+      presets: [
+        {
+          id: 'qwen-image-lighting',
+          name: 'Qwen Image Lighting',
+          comfygen_min_version: '0.2.0',
+          disk_size_estimate_gb: 65,
+          preset_url: 'https://example/preset.json',
+        },
+      ],
+    }
+    const fetchMock = mockFetch([{ body: JSON.stringify(manifest) }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await getPresetManifest()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/presets/manifest',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result.presets).toHaveLength(1)
+    expect(result.presets[0].id).toBe('qwen-image-lighting')
+  })
+
+  test('appends ?refresh=1 when refresh:true', async () => {
+    const fetchMock = mockFetch([
+      { body: JSON.stringify({ manifest_version: 1, presets: [] }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getPresetManifest({ refresh: true })
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/presets/manifest?refresh=1')
+  })
+
+  test('returns the stale-cache flag + fetch_error when the backend falls back', async () => {
+    const fetchMock = mockFetch([
+      {
+        body: JSON.stringify({
+          manifest_version: 1,
+          presets: [],
+          cache: 'stale',
+          fetch_error: 'network unreachable',
+        }),
+      },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await getPresetManifest()
+    expect(result.cache).toBe('stale')
+    expect(result.fetch_error).toBe('network unreachable')
+  })
+
+  test('throws on 502 (no cache + unreachable)', async () => {
+    const fetchMock = mockFetch([
+      { status: 502, body: JSON.stringify({ detail: 'could not reach preset registry' }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getPresetManifest()).rejects.toThrow(/could not reach/)
+  })
+})
+
+describe('listInstalledPresets', () => {
+  test('returns array of installed summaries', async () => {
+    const fetchMock = mockFetch([
+      {
+        body: JSON.stringify({
+          installed: [
+            {
+              preset_id: 'qwen-image-lighting',
+              version: '0.2.0',
+              disk_size_gb: 65,
+              installed_at: '2026-05-21T10:00:00',
+              updated_at: '2026-05-21T10:00:00',
+            },
+          ],
+        }),
+      },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await listInstalledPresets()
+    expect(result).toHaveLength(1)
+    expect(result[0].preset_id).toBe('qwen-image-lighting')
+    expect(result[0].disk_size_gb).toBe(65)
+  })
+
+  test('returns [] when nothing installed', async () => {
+    const fetchMock = mockFetch([{ body: JSON.stringify({ installed: [] }) }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await listInstalledPresets()).toEqual([])
+  })
+})
+
+describe('getInstalledPreset', () => {
+  test('returns the preset detail with workflow_json parsed', async () => {
+    const fetchMock = mockFetch([
+      {
+        body: JSON.stringify({
+          preset_id: 'qwen-image-lighting',
+          version: '0.2.0',
+          disk_size_gb: 65,
+          installed_at: '2026-05-21T10:00:00',
+          updated_at: '2026-05-21T10:00:00',
+          workflow_json: { '3': { class_type: 'KSampler' } },
+        }),
+      },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await getInstalledPreset('qwen-image-lighting')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/presets/installed/qwen-image-lighting',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result.workflow_json).toEqual({ '3': { class_type: 'KSampler' } })
+  })
+
+  test('throws on 404 when not installed', async () => {
+    const fetchMock = mockFetch([
+      { status: 404, body: JSON.stringify({ detail: "preset 'foo' is not installed" }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getInstalledPreset('foo')).rejects.toThrow(/not installed/)
   })
 })

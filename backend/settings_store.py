@@ -81,6 +81,19 @@ def init_db() -> None:
                     value TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                -- sgs-ui-wisp-las.3 Stage A: track which presets the user has
+                -- installed onto the ComfyGen network volume. workflow_json
+                -- is cached locally so the ComfyGen block dropdown doesn't
+                -- have to re-fetch the registry on every render.
+                CREATE TABLE IF NOT EXISTS settings_installed_presets (
+                    preset_id TEXT PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    disk_size_gb INTEGER,
+                    workflow_json TEXT NOT NULL,
+                    installed_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             # Migration: settings_endpoints originally didn't have template_name.
@@ -280,3 +293,87 @@ def get_app_pref(name: str, default: str | None = None) -> str | None:
     finally:
         conn.close()
     return row["value"] if row else default
+
+
+# === installed presets (sgs-ui-wisp-las.3 Stage A) ==========================
+
+def record_installed_preset(
+    *,
+    preset_id: str,
+    version: str,
+    workflow_json: str,
+    disk_size_gb: int | None = None,
+) -> None:
+    """Upsert an installed-preset row. workflow_json is stored as a string
+    (the caller stringifies the dict) so the table stays opaque to schema
+    drift in the preset spec."""
+    now = _now()
+    with _lock:
+        conn = _get_conn()
+        try:
+            conn.execute(
+                """
+                INSERT INTO settings_installed_presets
+                    (preset_id, version, disk_size_gb, workflow_json, installed_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(preset_id) DO UPDATE SET
+                    version=excluded.version,
+                    disk_size_gb=excluded.disk_size_gb,
+                    workflow_json=excluded.workflow_json,
+                    updated_at=excluded.updated_at
+                """,
+                (preset_id, version, disk_size_gb, workflow_json, now, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def list_installed_presets() -> list[dict]:
+    """List all installed presets WITHOUT the workflow_json blob (the blob
+    can be large; callers fetch it via get_installed_preset for one row)."""
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT preset_id, version, disk_size_gb, installed_at, updated_at
+            FROM settings_installed_presets
+            ORDER BY preset_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_installed_preset(preset_id: str) -> dict | None:
+    """Fetch one installed preset including its cached workflow_json."""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT preset_id, version, disk_size_gb, workflow_json,
+                   installed_at, updated_at
+            FROM settings_installed_presets
+            WHERE preset_id = ?
+            """,
+            (preset_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+def remove_installed_preset(preset_id: str) -> bool:
+    """Drop the row. Returns True if a row was deleted."""
+    with _lock:
+        conn = _get_conn()
+        try:
+            cur = conn.execute(
+                "DELETE FROM settings_installed_presets WHERE preset_id = ?",
+                (preset_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return cur.rowcount > 0
