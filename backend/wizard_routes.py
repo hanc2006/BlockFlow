@@ -1,0 +1,270 @@
+"""ComfyGen setup wizard backend (sgs-ui-wisp-las.2 Stage B).
+
+Orchestrates the runpod_api client + Settings store to spin up a new
+ComfyGen serverless endpoint, or attach an existing one. Each provisioning
+attempt is all-or-nothing: on failure, any partially-created resources
+(volume, template) are rolled back so we don't leave dangling RunPod
+resources for the user to clean up manually.
+
+The trainer wizard flow (.5) lives behind a separate stub route; deferred
+until the trainer image is publishable.
+"""
+from __future__ import annotations
+
+import uuid
+from typing import Any, Literal
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+from backend import runpod_api, settings_store
+
+router = APIRouter()
+
+# === ComfyGen tier definitions (mirrors ComfyGen init.py TIERS) =============
+
+TIERS: dict[str, dict[str, Any]] = {
+    "budget": {
+        "name": "Budget",
+        "gpu_ids": ["NVIDIA GeForce RTX 5090"],
+        "datacenter": "EU-RO-1",
+        "label": "RTX 5090 (32GB)",
+        "region": "Europe — Romania",
+    },
+    "recommended": {
+        "name": "Recommended",
+        "gpu_ids": [
+            "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            "NVIDIA A100-SXM4-80GB",
+        ],
+        "datacenter": "EUR-IS-1",
+        "label": "RTX PRO 6000 / A100 SXM (96/80GB)",
+        "region": "Europe — Iceland",
+    },
+    "performance": {
+        "name": "Performance",
+        "gpu_ids": ["NVIDIA H100 NVL", "NVIDIA H100 PCIe"],
+        "datacenter": "US-KS-2",
+        "label": "H100 NVL / H100 PCIe (94/80GB)",
+        "region": "US — Kansas",
+    },
+}
+
+REQUIRED_R2_CREDS: tuple[str, ...] = (
+    "r2_endpoint_url",
+    "r2_access_key_id",
+    "r2_secret_access_key",
+    "r2_bucket",
+)
+
+DEFAULT_VOLUME_SIZE_GB = 200
+DEFAULT_MAX_WORKERS = 3
+
+
+# === request bodies =========================================================
+
+class ProvisionBody(BaseModel):
+    tier: Literal["budget", "recommended", "performance"] = "budget"
+    volume_size_gb: int = Field(DEFAULT_VOLUME_SIZE_GB, ge=10, le=10000)
+    max_workers: int = Field(DEFAULT_MAX_WORKERS, ge=1, le=10)
+    name: str | None = None
+
+
+class AttachBody(BaseModel):
+    endpoint_id: str = Field(..., min_length=1)
+    volume_id: str | None = None
+
+
+# === helpers ================================================================
+
+def _required_creds_present() -> tuple[bool, list[str]]:
+    """Returns (ready, missing_credentials)."""
+    missing = []
+    if not settings_store.get_credential("runpod_api_key"):
+        missing.append("runpod_api_key")
+    for r2_field in REQUIRED_R2_CREDS:
+        if not settings_store.get_credential(r2_field):
+            missing.append(r2_field)
+    return (not missing, missing)
+
+
+def _build_env_for_template() -> dict[str, str]:
+    """Construct the env-var bundle that gets baked into the RunPod template."""
+    env = {
+        "RUNTIME_REPO_URL": runpod_api.RUNTIME_REPO_URL,
+        "RUNTIME_REPO_REF": "main",
+        # R2 creds (S3-compatible)
+        "AWS_ACCESS_KEY_ID": settings_store.get_credential("r2_access_key_id") or "",
+        "AWS_SECRET_ACCESS_KEY": settings_store.get_credential("r2_secret_access_key") or "",
+        "S3_BUCKET": settings_store.get_credential("r2_bucket") or "",
+        "S3_REGION": "auto",
+        "S3_ENDPOINT_URL": settings_store.get_credential("r2_endpoint_url") or "",
+    }
+    # Optional CivitAI token if present
+    civitai = settings_store.get_credential("civitai_api_key")
+    if civitai:
+        env["CIVITAI_TOKEN"] = civitai
+    return env
+
+
+def _short_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+# === routes =================================================================
+
+@router.get("/api/wizard/comfygen/preflight")
+def preflight() -> JSONResponse:
+    """Tell the UI whether all required creds are present before launching the wizard."""
+    ready, missing = _required_creds_present()
+    return JSONResponse({"ready": ready, "missing": missing})
+
+
+@router.get("/api/wizard/comfygen/tiers")
+def tiers() -> JSONResponse:
+    return JSONResponse({
+        "tiers": [{"id": tier_id, **spec} for tier_id, spec in TIERS.items()],
+    })
+
+
+@router.post("/api/wizard/comfygen/provision")
+def provision(body: ProvisionBody) -> JSONResponse:
+    if body.tier not in TIERS:
+        raise HTTPException(status_code=400, detail=f"unknown tier '{body.tier}'; allowed: {list(TIERS)}")
+
+    ready, missing = _required_creds_present()
+    if not ready:
+        raise HTTPException(
+            status_code=400,
+            detail=f"missing required credentials in Settings: {missing}",
+        )
+
+    api_key = settings_store.get_credential("runpod_api_key")
+    assert api_key  # ready=True guarantees it
+    tier = TIERS[body.tier]
+
+    suffix = _short_id()
+    name = body.name or f"blockflow-comfygen-{suffix}"
+    template_name = f"{name}-template-{suffix}"
+
+    # Step 1: network volume
+    try:
+        volume = runpod_api.create_network_volume(
+            api_key,
+            name=name,
+            size_gb=body.volume_size_gb,
+            datacenter_id=tier["datacenter"],
+        )
+    except runpod_api.RunPodAPIError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    volume_id = volume["id"]
+
+    # Step 2: template (rollback volume on failure)
+    try:
+        template = runpod_api.create_template(
+            api_key,
+            name=template_name,
+            image_name=runpod_api.BASE_DOCKER_IMAGE,
+            env=_build_env_for_template(),
+        )
+    except runpod_api.RunPodAPIError as exc:
+        _safe_delete_volume(api_key, volume_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    template_id = template["id"]
+
+    # Step 3: endpoint (rollback volume + template on failure)
+    try:
+        endpoint = runpod_api.create_endpoint(
+            api_key,
+            name=name,
+            template_id=template_id,
+            gpu_type_ids=tier["gpu_ids"],
+            network_volume_id=volume_id,
+            workers_min=0,
+            workers_max=body.max_workers,
+        )
+    except runpod_api.RunPodAPIError as exc:
+        _safe_delete_template(api_key, template_name)
+        _safe_delete_volume(api_key, volume_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    endpoint_id = endpoint["id"]
+
+    # Persist to Settings
+    settings_store.set_endpoint(
+        "comfygen",
+        endpoint_id=endpoint_id,
+        volume_id=volume_id,
+        template_id=template_id,
+        gpu_tier=body.tier,
+        volume_size_gb=body.volume_size_gb,
+        max_workers=body.max_workers,
+    )
+
+    return JSONResponse({
+        "endpoint_id": endpoint_id,
+        "template_id": template_id,
+        "template_name": template_name,
+        "volume_id": volume_id,
+        "name": name,
+        "tier": body.tier,
+        "status": "provisioning",
+    })
+
+
+@router.post("/api/wizard/comfygen/attach")
+def attach(body: AttachBody) -> JSONResponse:
+    api_key = settings_store.get_credential("runpod_api_key")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="runpod_api_key not configured in Settings")
+
+    # Verify the endpoint is reachable + the API key has access to it.
+    try:
+        runpod_api.get_endpoint_health(api_key, body.endpoint_id)
+    except runpod_api.RunPodAPIError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"could not reach endpoint {body.endpoint_id}: {exc}",
+        ) from exc
+
+    settings_store.set_endpoint(
+        "comfygen",
+        endpoint_id=body.endpoint_id,
+        volume_id=body.volume_id,
+    )
+
+    ep = settings_store.get_endpoint("comfygen")
+    return JSONResponse(ep)
+
+
+@router.get("/api/wizard/comfygen/health/{endpoint_id}")
+def health(endpoint_id: str) -> JSONResponse:
+    api_key = settings_store.get_credential("runpod_api_key")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="runpod_api_key not configured in Settings")
+    try:
+        result = runpod_api.get_endpoint_health(api_key, endpoint_id)
+    except runpod_api.RunPodAPIError as exc:
+        raise HTTPException(status_code=502, detail=f"upstream RunPod error: {exc}") from exc
+    return JSONResponse(result)
+
+
+# === rollback helpers =======================================================
+
+def _safe_delete_volume(api_key: str, volume_id: str) -> None:
+    try:
+        runpod_api.delete_network_volume(api_key, volume_id)
+    except runpod_api.RunPodAPIError:
+        # Best-effort cleanup; ignore failures (user can still manually delete
+        # via RunPod console, and the original error gets surfaced to the user).
+        pass
+
+
+def _safe_delete_template(api_key: str, template_name: str) -> None:
+    try:
+        runpod_api.delete_template(api_key, template_name=template_name)
+    except runpod_api.RunPodAPIError:
+        pass

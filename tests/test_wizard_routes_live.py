@@ -1,0 +1,163 @@
+"""LIVE end-to-end test for the ComfyGen setup wizard (sgs-ui-wisp-las.2 Stage B).
+
+Gated by `BLOCKFLOW_LIVE_TESTS=1`. Reads RUNPOD_API_KEY from env.
+
+This test exercises the FULL provisioning chain from BlockFlow's wizard
+backend — not just the runpod_api client. It validates that the wizard
+correctly orchestrates the API calls and persists Settings.
+
+Flow:
+  1. Pre-populate Settings with RUNPOD_API_KEY + dummy R2 creds (R2 connect
+     is not exercised by provisioning itself; the values just get baked into
+     the template env vars, which is fine — we tear down before any worker
+     spins up).
+  2. POST /api/wizard/comfygen/provision with tier="budget".
+  3. Verify response shape + Settings was persisted correctly.
+  4. Verify /api/wizard/comfygen/health returns valid worker counts.
+  5. Tear down via direct runpod_api calls (drain → DELETE endpoint →
+     deleteTemplate → DELETE volume).
+
+Cost: ~$0 because workers stay at 0; only metadata operations occur.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import time
+from pathlib import Path
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from backend import runpod_api, settings_store, wizard_routes  # noqa: E402
+
+LIVE_ENABLED = os.environ.get("BLOCKFLOW_LIVE_TESTS") == "1"
+API_KEY = os.environ.get("RUNPOD_API_KEY", "")
+
+pytestmark = pytest.mark.skipif(
+    not LIVE_ENABLED,
+    reason="Live RunPod tests gated by BLOCKFLOW_LIVE_TESTS=1",
+)
+
+
+@pytest.fixture
+def app(tmp_path, monkeypatch):
+    if not API_KEY:
+        pytest.skip("RUNPOD_API_KEY not set")
+
+    db_path = tmp_path / "live_wizard.db"
+    monkeypatch.setattr(settings_store, "DB_PATH", db_path)
+    settings_store.init_db()
+
+    # Real RunPod key + dummy R2 creds (R2 isn't actually called during
+    # provisioning; values just get embedded in template env).
+    settings_store.set_credential("runpod_api_key", API_KEY)
+    settings_store.set_credential("r2_endpoint_url", "https://example.r2.cloudflarestorage.com")
+    settings_store.set_credential("r2_access_key_id", "dummy-access-key")
+    settings_store.set_credential("r2_secret_access_key", "dummy-secret-key")
+    settings_store.set_credential("r2_bucket", "blockflow-test-dummy-bucket")
+
+    fastapi_app = FastAPI()
+    fastapi_app.include_router(wizard_routes.router)
+    return fastapi_app
+
+
+def test_live_wizard_provision_then_teardown(app):
+    """End-to-end: BlockFlow wizard provisions a real ComfyGen endpoint, then
+    cleans up. Validates the wizard backend's orchestration end-to-end."""
+    client = TestClient(app)
+
+    # Preflight should report ready
+    pre = client.get("/api/wizard/comfygen/preflight")
+    assert pre.status_code == 200
+    assert pre.json() == {"ready": True, "missing": []}, pre.json()
+
+    # Tiers endpoint
+    tiers = client.get("/api/wizard/comfygen/tiers").json()["tiers"]
+    assert any(t["id"] == "budget" for t in tiers)
+
+    # Provision (low tier = budget; workersMin/Max stay small)
+    print("[live] provisioning ComfyGen endpoint via wizard...")
+    provision_resp = client.post(
+        "/api/wizard/comfygen/provision",
+        json={"tier": "budget", "volume_size_gb": 10, "max_workers": 1},
+    )
+
+    endpoint_id: str | None = None
+    template_id: str | None = None
+    volume_id: str | None = None
+    template_name: str | None = None
+
+    try:
+        if provision_resp.status_code != 200:
+            print(f"[live] provision failed: HTTP {provision_resp.status_code}: {provision_resp.text}")
+        assert provision_resp.status_code == 200
+        body = provision_resp.json()
+
+        assert body["status"] == "provisioning"
+        endpoint_id = body["endpoint_id"]
+        template_id = body["template_id"]
+        template_name = body["template_name"]
+        volume_id = body["volume_id"]
+        assert endpoint_id and template_id and template_name and volume_id
+
+        print(f"[live] provisioned: endpoint={endpoint_id} template={template_id} volume={volume_id}")
+
+        # Settings should reflect the new endpoint
+        ep = settings_store.get_endpoint("comfygen")
+        assert ep is not None
+        assert ep["endpoint_id"] == endpoint_id
+        assert ep["template_id"] == template_id
+        assert ep["volume_id"] == volume_id
+        assert ep["gpu_tier"] == "budget"
+        assert ep["volume_size_gb"] == 10
+        assert ep["max_workers"] == 1
+
+        # Health proxy
+        health_resp = client.get(f"/api/wizard/comfygen/health/{endpoint_id}")
+        assert health_resp.status_code == 200
+        workers = health_resp.json()["workers"]
+        # Just-provisioned endpoint: 0 ready, 0 idle (no jobs queued)
+        assert workers["ready"] == 0
+        assert workers["idle"] == 0
+        print(f"[live] endpoint health: {workers}")
+
+    finally:
+        # Best-effort cleanup. Use direct runpod_api so we don't depend on
+        # tear-down routes that haven't been built yet (Stage 5.5).
+        if endpoint_id:
+            try:
+                runpod_api.delete_endpoint(API_KEY, endpoint_id)
+                print(f"[live] deleted endpoint {endpoint_id}")
+            except Exception as exc:
+                print(f"[live] WARN: endpoint cleanup failed: {exc}")
+
+        if template_name:
+            # Template deletion can take up to 2 min after the endpoint is gone.
+            for attempt in range(6):
+                try:
+                    runpod_api.delete_template(API_KEY, template_name=template_name)
+                    print(f"[live] deleted template {template_name}")
+                    break
+                except Exception as exc:
+                    if attempt == 5:
+                        print(f"[live] WARN: template cleanup failed: {exc}")
+                        break
+                    time.sleep(5)
+
+        if volume_id:
+            # Wait a few seconds for the endpoint deletion to release the volume
+            for attempt in range(6):
+                try:
+                    runpod_api.delete_network_volume(API_KEY, volume_id)
+                    print(f"[live] deleted volume {volume_id}")
+                    break
+                except Exception as exc:
+                    if attempt == 5:
+                        print(f"[live] WARN: volume cleanup failed: {exc}")
+                        break
+                    time.sleep(3)
