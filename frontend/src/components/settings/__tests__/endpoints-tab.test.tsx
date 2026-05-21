@@ -8,9 +8,16 @@
  */
 import { describe, expect, test, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 vi.mock('@/lib/settings/client', () => ({
   listEndpoints: vi.fn(),
+  // Stubs for the wizard component the Set Up button mounts
+  wizardPreflight: vi.fn().mockResolvedValue({ ready: true, missing: [] }),
+  wizardTiers: vi.fn().mockResolvedValue([]),
+  wizardProvision: vi.fn(),
+  wizardAttach: vi.fn(),
+  wizardHealth: vi.fn(),
 }))
 
 import * as client from '@/lib/settings/client'
@@ -118,5 +125,28 @@ describe('EndpointsTab — rendering', () => {
     // Headings within the tab — there's "ComfyGen" and "AIO LoRA Trainer"
     expect(headings[0].textContent).toMatch(/ComfyGen/)
     expect(headings[1].textContent).toMatch(/AIO LoRA Trainer/)
+  })
+
+  test('clicking ComfyGen Set up opens the wizard modal', async () => {
+    vi.mocked(client.listEndpoints).mockResolvedValue([])
+    const user = userEvent.setup()
+    render(<EndpointsTab />)
+
+    const setUpButtons = await screen.findAllByRole('button', { name: /Set up/i })
+    await user.click(setUpButtons[0])  // ComfyGen row
+
+    // Wizard's header should appear
+    expect(await screen.findByRole('heading', { name: /Set up ComfyGen endpoint/i })).toBeInTheDocument()
+  })
+
+  test('clicking trainer Set up shows the deferred-scaffolding placeholder', async () => {
+    vi.mocked(client.listEndpoints).mockResolvedValue([])
+    const user = userEvent.setup()
+    render(<EndpointsTab />)
+
+    const setUpButtons = await screen.findAllByRole('button', { name: /Set up/i })
+    await user.click(setUpButtons[1])  // trainer row
+
+    expect(await screen.findByText(/Trainer setup ships alongside/i)).toBeInTheDocument()
   })
 })

@@ -1,8 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { listEndpoints, type EndpointRecord } from '@/lib/settings/client'
+
+import { ComfyGenWizard } from '@/components/wizard/comfygen-wizard'
 
 type EndpointType = 'comfygen' | 'aio_trainer'
 
@@ -22,12 +24,11 @@ const ENDPOINT_DEFINITIONS: { type: EndpointType; label: string; description: st
 export function EndpointsTab() {
   const [byType, setByType] = useState<Map<EndpointType, EndpointRecord>>(new Map())
   const [loaded, setLoaded] = useState(false)
+  const [wizardOpen, setWizardOpen] = useState<EndpointType | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
+  const refresh = useCallback(() => {
     listEndpoints()
       .then((records) => {
-        if (cancelled) return
         const m = new Map<EndpointType, EndpointRecord>()
         for (const r of records) {
           if (r.type === 'comfygen' || r.type === 'aio_trainer') {
@@ -38,10 +39,11 @@ export function EndpointsTab() {
         setLoaded(true)
       })
       .catch(() => setLoaded(true))
-    return () => {
-      cancelled = true
-    }
   }, [])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
 
   return (
     <div className="space-y-4">
@@ -51,8 +53,46 @@ export function EndpointsTab() {
           definition={def}
           record={byType.get(def.type) ?? null}
           loaded={loaded}
+          onSetUp={() => setWizardOpen(def.type)}
         />
       ))}
+
+      {wizardOpen === 'comfygen' && (
+        <ComfyGenWizard
+          onClose={() => setWizardOpen(null)}
+          onSuccess={() => {
+            refresh()
+          }}
+        />
+      )}
+
+      {wizardOpen === 'aio_trainer' && (
+        <TrainerWizardPlaceholder onClose={() => setWizardOpen(null)} />
+      )}
+    </div>
+  )
+}
+
+function TrainerWizardPlaceholder({ onClose }: { onClose: () => void }) {
+  // Trainer wizard scaffolding — deferred per .2 scope narrowing.
+  // Mounts the same modal shell so the Set Up button feels live, but tells
+  // the user the trainer flow ships alongside .5 (trainer image publish).
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="bg-card border border-border/50 rounded-lg shadow-xl max-w-md w-full p-6 space-y-3">
+        <h2 className="text-lg font-semibold">AIO Trainer wizard</h2>
+        <p className="text-sm text-muted-foreground">
+          Trainer setup ships alongside sgs-ui-wisp-las.5 (trainer image publish).
+          For now, the ComfyGen wizard is the only working setup flow.
+        </p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="px-3 py-1.5 text-xs rounded border border-border"
+        >
+          Close
+        </button>
+      </div>
     </div>
   )
 }
@@ -61,9 +101,10 @@ interface RowProps {
   definition: { type: EndpointType; label: string; description: string }
   record: EndpointRecord | null
   loaded: boolean
+  onSetUp: () => void
 }
 
-function EndpointRow({ definition, record, loaded }: RowProps) {
+function EndpointRow({ definition, record, loaded, onSetUp }: RowProps) {
   const configured = record !== null
 
   return (
@@ -108,8 +149,9 @@ function EndpointRow({ definition, record, loaded }: RowProps) {
       <div className="flex flex-wrap gap-2 pt-1">
         <button
           type="button"
+          onClick={onSetUp}
           disabled={configured}
-          title={configured ? 'Already configured — tear down to reset' : 'Launch the setup wizard (Stage .2)'}
+          title={configured ? 'Already configured — tear down to reset' : 'Launch the setup wizard'}
           className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Set up
