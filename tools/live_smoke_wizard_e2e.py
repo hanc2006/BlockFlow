@@ -181,8 +181,32 @@ def main() -> int:
         # job runs. submit polls internally.
         log(f"endpoint health snapshot (pre-submit): {health_snapshot(client, endpoint_id)}")
 
+        # === pre-download SDXL Turbo to the network volume ===
+        # Fresh volume has no models; the workflow references
+        # sd_xl_turbo_1.0_fp16.safetensors. Download via comfy-gen.
+        log("pre-downloading SDXL Turbo to volume via comfy-gen download...")
+        dl_proc = subprocess.run(
+            [
+                "comfy-gen", "download", "url",
+                "https://huggingface.co/stabilityai/sdxl-turbo/resolve/main/sd_xl_turbo_1.0_fp16.safetensors",
+                "--dest", "checkpoints",
+                "--filename", "sd_xl_turbo_1.0_fp16.safetensors",
+                "--endpoint-id", endpoint_id,
+                "--timeout", "900",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15 * 60,
+        )
+        if dl_proc.returncode != 0:
+            log(f"download failed (exit {dl_proc.returncode}):")
+            log(f"  stderr: {dl_proc.stderr[-1500:]}")
+            log(f"  stdout: {dl_proc.stdout[-1500:]}")
+            raise RuntimeError(f"model download failed: exit {dl_proc.returncode}")
+        log(f"download complete: {dl_proc.stdout[:300]}")
+
         # === run the workflow ===
-        log("submitting workflow — comfy-gen will poll until done (cold-start handled by RunPod)")
+        log("submitting workflow — model is now on volume, expect ~30s inference")
         result = submit_workflow(endpoint_id)
         log(f"workflow result: ok={result.get('ok')} job_id={result.get('job_id')}")
         if result.get("ok"):
