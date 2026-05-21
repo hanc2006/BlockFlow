@@ -269,6 +269,20 @@ def main() -> int:
         preset_routes._MANIFEST_URL = orig_manifest_url
         server.shutdown()
 
+        # Restore the canonical manifest.json — the smoke rewrote it with
+        # localhost URLs in regenerate_local_manifest(), and the committed
+        # version in the registry repo must point at github.com.
+        try:
+            subprocess.run(
+                ["python3", "tools/build_manifest.py"],
+                cwd=str(REGISTRY_DIR),
+                check=False,
+                capture_output=True,
+            )
+            log("restored canonical manifest.json")
+        except Exception as exc:
+            log(f"  WARN: could not restore manifest.json: {exc}")
+
 
 if __name__ == "__main__":
     sys.exit(main())
