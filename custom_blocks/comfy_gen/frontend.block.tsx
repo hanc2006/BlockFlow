@@ -1670,7 +1670,7 @@ function ComfyGenBlock({
       {/* Workflow upload + preset picker */}
       <div className="space-y-1">
         <Label className="text-xs">Workflow</Label>
-        {installedPresets.length > 0 && (
+        {installedPresets.length > 0 ? (
           <div className="flex items-center gap-2">
             <Select
               value={selectedPresetId}
@@ -1694,6 +1694,17 @@ function ComfyGenBlock({
               <span className="text-[10px] text-muted-foreground">applying…</span>
             )}
           </div>
+        ) : (
+          <p className="text-[11px] text-muted-foreground">
+            No presets installed yet.{' '}
+            <a
+              href="/presets"
+              className="underline hover:text-foreground"
+            >
+              Install one
+            </a>{' '}
+            to load a workflow + models in one click.
+          </p>
         )}
         {presetApplyError && (
           <p className="text-[10px] text-red-400">{presetApplyError}</p>
