@@ -1,5 +1,5 @@
 // AUTO-GENERATED. DO NOT EDIT.
-// Source: custom_blocks/lora_selector/frontend.block.tsx
+// Source: private_blocks/lora_selector/frontend.block.tsx
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
