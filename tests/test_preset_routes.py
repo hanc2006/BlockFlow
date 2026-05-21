@@ -10,6 +10,7 @@ TTL, fallback semantics, and route shape.
 """
 from __future__ import annotations
 
+import io
 import json
 import sys
 import time
@@ -19,6 +20,19 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+
+def _make_fake_popen(stdout: str = "", stderr: str = "", returncode: int = 0) -> MagicMock:
+    """Build a MagicMock that mimics the Popen interface the streaming code
+    consumes: line-iterable .stdout/.stderr (via readline), .wait(), .kill().
+    StringIO works with `iter(stream.readline, '')` — yields lines until EOF.
+    """
+    proc = MagicMock()
+    proc.stdout = io.StringIO(stdout)
+    proc.stderr = io.StringIO(stderr)
+    proc.wait.return_value = returncode
+    proc.returncode = returncode
+    return proc
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -334,12 +348,9 @@ def test_install_starts_subprocess_with_batch_download(client, install_ready, mo
                             _mock_response(QWEN_FULL_PRESET),
                         ]))
 
-    # Mock the subprocess so the install doesn't actually shell out
-    fake_proc = MagicMock()
-    fake_proc.returncode = 0
-    fake_proc.stdout = '{"ok": true, "downloaded_files": 2}'
-    fake_proc.stderr = ""
-    run_mock = mocker.patch.object(preset_routes.subprocess, "run", return_value=fake_proc)
+    # Mock Popen so the install doesn't actually shell out
+    fake_proc = _make_fake_popen(stdout='{"ok": true, "downloaded_files": 2}', returncode=0)
+    run_mock = mocker.patch.object(preset_routes.subprocess, "Popen", return_value=fake_proc)
 
     r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
 
@@ -377,22 +388,16 @@ def test_install_propagates_sha256_into_batch_spec(client, install_ready, mocker
                             _mock_response(QWEN_FULL_PRESET),
                         ]))
 
-    fake_proc = MagicMock()
-    fake_proc.returncode = 0
-    fake_proc.stdout = '{"ok": true}'
-    fake_proc.stderr = ""
-
     # Capture the --batch tempfile path + its contents at the time of the call
     batch_payload: list[dict] = []
     def _capture(args, *a, **kw):
-        # Find --batch <path> in the argv
         if "--batch" in args:
             batch_path = args[args.index("--batch") + 1]
             with open(batch_path) as f:
                 batch_payload.extend(json.load(f))
-        return fake_proc
+        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
 
-    mocker.patch.object(preset_routes.subprocess, "run", side_effect=_capture)
+    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_capture)
 
     r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
     assert r.status_code == 202
@@ -421,11 +426,8 @@ def test_install_persists_to_settings_on_success(client, install_ready, mocker):
                             _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "https://example/preset.json"}])),
                             _mock_response(QWEN_FULL_PRESET),
                         ]))
-    fake_proc = MagicMock()
-    fake_proc.returncode = 0
-    fake_proc.stdout = '{"ok": true}'
-    fake_proc.stderr = ""
-    mocker.patch.object(preset_routes.subprocess, "run", return_value=fake_proc)
+    fake_proc = _make_fake_popen(stdout='{"ok": true}', returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=fake_proc)
 
     client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
 
@@ -489,11 +491,8 @@ def test_install_records_error_on_subprocess_failure(client, install_ready, mock
                             _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
                             _mock_response(QWEN_FULL_PRESET),
                         ]))
-    fake_proc = MagicMock()
-    fake_proc.returncode = 1
-    fake_proc.stdout = "{}"
-    fake_proc.stderr = "Download failed: network timeout"
-    mocker.patch.object(preset_routes.subprocess, "run", return_value=fake_proc)
+    fake_proc = _make_fake_popen(stdout="{}", stderr="Download failed: network timeout", returncode=1)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=fake_proc)
 
     client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
 
@@ -618,11 +617,8 @@ def test_install_proceeds_when_disk_budget_unknown(client, install_ready, mocker
                             _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
                             _mock_response(QWEN_FULL_PRESET),
                         ]))
-    fake_proc = MagicMock()
-    fake_proc.returncode = 0
-    fake_proc.stdout = '{}'
-    fake_proc.stderr = ""
-    mocker.patch.object(preset_routes.subprocess, "run", return_value=fake_proc)
+    fake_proc = _make_fake_popen(stdout='{}', returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=fake_proc)
 
     r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
     assert r.status_code == 202

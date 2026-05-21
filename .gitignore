@@ -8,9 +8,19 @@ venv/
 
 # Runtime data (local only)
 run_history.db
+run_history.db.backup*
 job_history.json
 output/
+output
 prompt_writer_settings.json
+prompt_library.json
+
+# Beads passive export — sync uses refs/dolt/data, jsonl is regenerated
+.beads/interactions.jsonl
+.beads/issues.jsonl
+
+# Top-level worktrees dir (separate from .claude/worktrees/)
+.worktrees/
 
 # Flow data (gitignored, personal pipelines)
 flows/*.flow.json

@@ -3,13 +3,11 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import {
-  getDiskBudget,
   getInstallProgress,
   getPresetManifest,
   installPreset,
   listInstalledPresets,
   uninstallPreset,
-  type DiskBudget,
   type InstallProgress,
   type InstalledPresetSummary,
   type PresetManifest,
@@ -20,7 +18,6 @@ export function PresetsPageBody() {
   const [manifest, setManifest] = useState<PresetManifest | null>(null)
   const [manifestErr, setManifestErr] = useState<string | null>(null)
   const [installed, setInstalled] = useState<InstalledPresetSummary[]>([])
-  const [budget, setBudget] = useState<DiskBudget | null>(null)
   const [progress, setProgress] = useState<InstallProgress | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
 
@@ -36,11 +33,6 @@ export function PresetsPageBody() {
       setInstalled(await listInstalledPresets())
     } catch {
       setInstalled([])
-    }
-    try {
-      setBudget(await getDiskBudget())
-    } catch {
-      setBudget(null)
     }
   }, [])
 
@@ -116,8 +108,6 @@ export function PresetsPageBody() {
         </button>
       </header>
 
-      {budget && <DiskBudgetCard budget={budget} />}
-
       {manifestErr && (
         <div className="border border-destructive/40 bg-destructive/10 rounded p-3 text-sm">
           Couldn&apos;t reach the preset registry: <span className="font-mono text-xs">{manifestErr}</span>
@@ -163,44 +153,6 @@ export function PresetsPageBody() {
         )}
       </section>
     </main>
-  )
-}
-
-function DiskBudgetCard({ budget }: { budget: DiskBudget }) {
-  const usedPct =
-    budget.total_gb && budget.total_gb > 0
-      ? Math.min(100, Math.round((budget.used_estimate_gb / budget.total_gb) * 100))
-      : null
-  return (
-    <article className="rounded border border-border/50 bg-card/40 p-4 space-y-2">
-      <h2 className="text-sm font-semibold">ComfyGen volume</h2>
-      {budget.total_gb === null ? (
-        <p className="text-xs text-muted-foreground">
-          Volume size unknown — provision a ComfyGen endpoint via Settings to see free space.
-        </p>
-      ) : (
-        <>
-          <div className="flex justify-between text-xs">
-            <span className="text-muted-foreground">
-              ~{budget.used_estimate_gb} GB used (estimate) · {budget.free_estimate_gb} GB free
-            </span>
-            <span className="text-muted-foreground">{budget.total_gb} GB total</span>
-          </div>
-          {usedPct !== null && (
-            <div className="h-1.5 rounded bg-muted/40 overflow-hidden">
-              <div
-                className="h-full bg-primary"
-                style={{ width: `${usedPct}%` }}
-              />
-            </div>
-          )}
-          <p className="text-[10px] text-muted-foreground/70">
-            Estimate from Settings — actual usage may differ if you&apos;ve downloaded
-            models out of band.
-          </p>
-        </>
-      )}
-    </article>
   )
 }
 

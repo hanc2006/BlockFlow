@@ -34,6 +34,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -284,35 +285,67 @@ def _run_install_subprocess(
             json.dump(batch_spec, tf)
             batch_path = tf.name
 
-        proc = subprocess.run(
+        # Stream subprocess output line-by-line instead of buffering until
+        # exit. subprocess.run(capture_output=True) holds 30+ min of stderr
+        # in RAM and only flushes to the log file on process exit, so a
+        # hanging download produces zero on-disk diagnostic until it dies.
+        # Popen + pump threads land each line in the log file as it arrives.
+        log_path = config.ROOT_DIR / "preset_install.log"
+        log_fp = log_path.open("a", buffering=1)
+        log_fp.write(f"\n\n=== {_now_iso()} preset={preset_id} START ===\n")
+        log_fp.write("--- STDERR (streamed) ---\n")
+
+        stderr_tail: deque[str] = deque(maxlen=80)
+        stdout_chunks: list[str] = []
+
+        proc = subprocess.Popen(
             [
                 "comfy-gen", "download",
                 "--batch", batch_path,
                 "--endpoint-id", endpoint_id,
-                "--timeout", "3600",  # 1h ceiling for large preset downloads
+                "--timeout", "3600",
             ],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=3600 + 60,
+            bufsize=1,
         )
 
-        # Always dump the FULL subprocess output to a sibling log file so the
-        # operator can diagnose failures that exceed our in-memory truncation.
-        try:
-            log_path = config.ROOT_DIR / "preset_install.log"
-            with log_path.open("a") as f:
-                f.write(f"\n\n=== {_now_iso()} preset={preset_id} returncode={proc.returncode} ===\n")
-                f.write("--- STDERR ---\n")
-                f.write(proc.stderr or "(empty)\n")
-                f.write("\n--- STDOUT ---\n")
-                f.write(proc.stdout or "(empty)\n")
-        except OSError:
-            pass
+        def _pump_stderr() -> None:
+            assert proc.stderr is not None
+            for line in iter(proc.stderr.readline, ""):
+                stderr_tail.append(line)
+                log_fp.write(line)
+            proc.stderr.close()
 
-        if proc.returncode != 0:
-            # Capture the TAIL of stderr — head is dominated by per-poll
-            # progress lines; the actual failure cause lands at the end.
-            err_text = (proc.stderr or proc.stdout or "comfy-gen download failed").strip()
+        def _pump_stdout() -> None:
+            assert proc.stdout is not None
+            for line in iter(proc.stdout.readline, ""):
+                stdout_chunks.append(line)
+            proc.stdout.close()
+
+        t_err = threading.Thread(target=_pump_stderr, daemon=True)
+        t_out = threading.Thread(target=_pump_stdout, daemon=True)
+        t_err.start()
+        t_out.start()
+
+        try:
+            returncode = proc.wait(timeout=3600 + 60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            returncode = proc.wait()
+
+        t_err.join(timeout=5)
+        t_out.join(timeout=5)
+
+        log_fp.write(f"\n=== {_now_iso()} preset={preset_id} returncode={returncode} ===\n")
+        log_fp.write("--- STDOUT ---\n")
+        log_fp.write("".join(stdout_chunks) or "(empty)\n")
+        log_fp.flush()
+        log_fp.close()
+
+        if returncode != 0:
+            err_text = ("".join(stderr_tail) or "".join(stdout_chunks) or "comfy-gen download failed").strip()
             error = (
                 "...(truncated head)... " + err_text[-3000:]
                 if len(err_text) > 3000
