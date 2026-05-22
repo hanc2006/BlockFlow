@@ -320,3 +320,89 @@ def test_settings_store_does_not_affect_existing_run_history_table(tmp_path, mon
     settings_store.set_credential("k", "v")
 
     assert settings_store.get_credential("k") == "v"
+
+
+# === installed presets: installed_paths (sgs-ui-i7j) ========================
+# Real uninstall needs to know which files on the volume belong to a preset.
+# record_installed_preset persists the canonical paths so the uninstall route
+# can hand them to `comfy-gen delete`.
+
+def test_record_installed_preset_persists_installed_paths(store):
+    paths = [
+        "/runpod-volume/ComfyUI/models/loras/foo.safetensors",
+        "/runpod-volume/ComfyUI/models/vae/bar.safetensors",
+    ]
+    settings_store.record_installed_preset(
+        preset_id="x",
+        version="0.1.0",
+        workflow_json="{}",
+        disk_size_gb=10,
+        installed_paths=paths,
+    )
+    got = settings_store.get_installed_preset("x")
+    assert got is not None
+    assert got["installed_paths"] == paths
+
+
+def test_record_installed_preset_installed_paths_defaults_to_empty_list(store):
+    """Backwards compat: existing callers that don't pass installed_paths
+    still work — the column is nullable, surfaced as [] on read."""
+    settings_store.record_installed_preset(
+        preset_id="x",
+        version="0.1.0",
+        workflow_json="{}",
+        disk_size_gb=10,
+    )
+    got = settings_store.get_installed_preset("x")
+    assert got is not None
+    assert got["installed_paths"] == []
+
+
+def test_record_installed_preset_installed_paths_updates_on_upsert(store):
+    """Re-install of the same preset replaces the paths (preset may have
+    added/removed model files between versions)."""
+    settings_store.record_installed_preset(
+        preset_id="x", version="0.1.0", workflow_json="{}", disk_size_gb=10,
+        installed_paths=["/rv/a.safetensors"],
+    )
+    settings_store.record_installed_preset(
+        preset_id="x", version="0.2.0", workflow_json="{}", disk_size_gb=15,
+        installed_paths=["/rv/a.safetensors", "/rv/b.safetensors"],
+    )
+    got = settings_store.get_installed_preset("x")
+    assert got["version"] == "0.2.0"
+    assert got["installed_paths"] == ["/rv/a.safetensors", "/rv/b.safetensors"]
+
+
+def test_init_db_migrates_legacy_settings_installed_presets_without_installed_paths(tmp_path, monkeypatch):
+    """A user upgrading from a pre-i7j build has settings_installed_presets
+    rows already in the DB without the installed_paths column. init_db must
+    add the column without losing existing rows."""
+    import sqlite3
+    db_path = tmp_path / "legacy.db"
+    monkeypatch.setattr(settings_store, "DB_PATH", db_path)
+
+    # Build the legacy schema by hand (no installed_paths column).
+    legacy = sqlite3.connect(str(db_path))
+    legacy.executescript("""
+        CREATE TABLE settings_installed_presets (
+            preset_id TEXT PRIMARY KEY,
+            version TEXT NOT NULL,
+            disk_size_gb INTEGER,
+            workflow_json TEXT NOT NULL,
+            installed_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO settings_installed_presets
+            (preset_id, version, disk_size_gb, workflow_json, installed_at, updated_at)
+        VALUES ('legacy', '0.1.0', 12, '{}', '2026-01-01', '2026-01-01');
+    """)
+    legacy.commit()
+    legacy.close()
+
+    settings_store.init_db()  # should ALTER TABLE without dropping the row
+
+    got = settings_store.get_installed_preset("legacy")
+    assert got is not None
+    assert got["version"] == "0.1.0"
+    assert got["installed_paths"] == []  # legacy row backfilled as empty

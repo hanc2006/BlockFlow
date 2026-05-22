@@ -352,6 +352,12 @@ export type InstallProgress = {
   completed_at: string | null
   files_total: number
   error: string | null
+  // sgs-ui-zr0: hash pre-flight classification. Surfaces after the install
+  // handler runs `comfy-gen hash --batch`; all-zero until then.
+  cached_count?: number
+  missing_count?: number
+  stale_count?: number
+  total_download_bytes?: number
 }
 
 export async function getPresetDetail(presetId: string): Promise<PresetDetail> {
@@ -382,8 +388,21 @@ export async function getInstallProgress(): Promise<InstallProgress> {
   return (await res.json()) as InstallProgress
 }
 
-export async function uninstallPreset(presetId: string): Promise<{ ok: boolean; preset_id: string }> {
+export type UninstallResult = {
+  ok: boolean
+  preset_id: string
+  deleted_count: number
+  errors: { path: string; error?: string }[]
+  // Present only when delete failed wholesale (subprocess non-zero rather
+  // than per-path errors).
+  error?: string | null
+}
+
+export async function uninstallPreset(presetId: string): Promise<UninstallResult> {
+  // 207 is a valid response (partial delete) — accept it as a normal payload.
   const res = await fetch(`/api/presets/uninstall/${encodeURIComponent(presetId)}`, { method: 'POST' })
-  await _throwIfNonOk(res)
+  if (res.status !== 207) {
+    await _throwIfNonOk(res)
+  }
   return res.json()
 }
