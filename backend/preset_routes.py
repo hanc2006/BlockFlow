@@ -178,6 +178,12 @@ _install_state: dict[str, Any] = {
     "completed_at": None,
     "files_total": 0,
     "error": None,
+    # sgs-ui-zr0: hash pre-flight classification (None until the hash phase
+    # runs; non-None means /progress can show the cached/download breakdown)
+    "cached_count": 0,
+    "missing_count": 0,
+    "stale_count": 0,
+    "total_download_bytes": 0,
 }
 _install_lock = threading.Lock()
 
@@ -191,6 +197,10 @@ def _reset_install_state() -> None:
         "completed_at": None,
         "files_total": 0,
         "error": None,
+        "cached_count": 0,
+        "missing_count": 0,
+        "stale_count": 0,
+        "total_download_bytes": 0,
     })
 
 
@@ -267,6 +277,174 @@ def disk_budget() -> JSONResponse:
     return JSONResponse(_compute_disk_budget())
 
 
+def _canonical_path_for_entry(entry: dict) -> str:
+    """Build the /runpod-volume path comfy-gen writes each file to. The
+    dest+filename split mirrors what the worker's download_handler reassembles
+    when deciding cache hits."""
+    return f"/runpod-volume/ComfyUI/models/{entry['dest']}/{entry['filename']}"
+
+
+def _run_comfy_gen_capture(
+    args: list[str],
+    *,
+    log_fp,
+    label: str,
+    timeout: int,
+) -> tuple[int, str, str]:
+    """Run a comfy-gen subcommand. Stream stderr to the install log file as
+    it arrives (so /preset_install.log stays useful for diagnosis), collect
+    stdout, and return (returncode, stdout, stderr_tail).
+
+    Pump BOTH pipes in threads — calling proc.communicate() after a manual
+    stderr pump raises EBADF once the pump closes the fd (same bug we fixed
+    in ci_live_install.py)."""
+    log_fp.write(f"\n--- [{label}] {' '.join(args[:3])} ---\n")
+    proc = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stderr_tail: deque[str] = deque(maxlen=80)
+    stdout_chunks: list[str] = []
+
+    def _pump_stderr() -> None:
+        assert proc.stderr is not None
+        try:
+            for line in iter(proc.stderr.readline, ""):
+                stderr_tail.append(line)
+                log_fp.write(line)
+        except ValueError:
+            # Pipe got closed under us — e.g., proc.kill() during a timeout
+            # or test teardown after the StringIO is GC'd. Either way, the
+            # pump's done.
+            pass
+        try:
+            proc.stderr.close()
+        except (OSError, ValueError):
+            pass
+
+    def _pump_stdout() -> None:
+        assert proc.stdout is not None
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                stdout_chunks.append(line)
+        except ValueError:
+            pass
+        try:
+            proc.stdout.close()
+        except (OSError, ValueError):
+            pass
+
+    t_err = threading.Thread(target=_pump_stderr, daemon=True)
+    t_out = threading.Thread(target=_pump_stdout, daemon=True)
+    t_err.start()
+    t_out.start()
+
+    try:
+        returncode = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        returncode = proc.wait()
+
+    t_err.join(timeout=5)
+    t_out.join(timeout=5)
+    return returncode, "".join(stdout_chunks), "".join(stderr_tail)
+
+
+def _hash_existing(
+    canonical_paths: list[str],
+    *,
+    endpoint_id: str,
+    log_fp,
+) -> dict[str, dict | None]:
+    """Call `comfy-gen hash --batch <paths>` and parse the response into
+    {path: {sha256, bytes} or None on error/missing}.
+
+    Returns an empty dict if the hash subprocess fails — the install handler
+    treats that as 'fall back to download everything', not as a hard error.
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8"
+    ) as tf:
+        json.dump(canonical_paths, tf)
+        paths_file = tf.name
+    try:
+        rc, stdout, stderr = _run_comfy_gen_capture(
+            [
+                "comfy-gen", "hash",
+                "--batch", paths_file,
+                "--endpoint-id", endpoint_id,
+                "--timeout", "600",
+            ],
+            log_fp=log_fp,
+            label="hash",
+            timeout=660,
+        )
+        if rc != 0:
+            log_fp.write(f"\n[hash] FAILED rc={rc} (treating as 'all missing'): {stderr[-500:]}\n")
+            return {}
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError:
+            log_fp.write("\n[hash] stdout not valid JSON (treating as 'all missing')\n")
+            return {}
+        results: dict[str, dict | None] = {}
+        for entry in payload.get("files", []):
+            path = entry.get("path")
+            if not path:
+                continue
+            sha = entry.get("sha256")
+            results[path] = {"sha256": sha, "bytes": entry.get("bytes")} if sha else None
+        return results
+    finally:
+        try:
+            Path(paths_file).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _delete_paths(
+    paths: list[str],
+    *,
+    endpoint_id: str,
+    log_fp,
+) -> dict[str, Any]:
+    """Call `comfy-gen delete --batch <paths>`. Returns the parsed response
+    dict so callers can inspect per-path errors."""
+    if not paths:
+        return {"ok": True, "results": []}
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8"
+    ) as tf:
+        json.dump(paths, tf)
+        paths_file = tf.name
+    try:
+        rc, stdout, stderr = _run_comfy_gen_capture(
+            [
+                "comfy-gen", "delete",
+                "--batch", paths_file,
+                "--endpoint-id", endpoint_id,
+                "--timeout", "300",
+            ],
+            log_fp=log_fp,
+            label="delete",
+            timeout=360,
+        )
+        if rc != 0:
+            return {"ok": False, "results": [], "error": stderr[-500:] or "delete failed"}
+        try:
+            return json.loads(stdout)
+        except json.JSONDecodeError:
+            return {"ok": False, "results": [], "error": "non-JSON delete output"}
+    finally:
+        try:
+            Path(paths_file).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _run_install_subprocess(
     *,
     preset_id: str,
@@ -276,94 +454,93 @@ def _run_install_subprocess(
     batch_spec: list[dict],
     endpoint_id: str,
 ) -> None:
-    """Background worker. Runs `comfy-gen download --batch` then persists
-    Settings on success. Updates _install_state throughout."""
+    """Background worker. Hashes the canonical paths first, classifies each
+    entry as cached / missing / stale, deletes stale bytes, downloads only
+    what's actually needed, then persists Settings on success."""
+    canonical_paths = [_canonical_path_for_entry(e) for e in batch_spec]
+    log_path = config.ROOT_DIR / "preset_install.log"
+    log_fp = log_path.open("a", buffering=1)
+    log_fp.write(f"\n\n=== {_now_iso()} preset={preset_id} START ===\n")
+    download_batch_path: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False, encoding="utf-8"
-        ) as tf:
-            json.dump(batch_spec, tf)
-            batch_path = tf.name
+        # === phase 1: hash pre-flight (sgs-ui-zr0) =========================
+        # Ask the worker for the sha256 of each canonical path. Missing
+        # files come back with null hash; mismatched files come back with a
+        # hash that doesn't match preset.json's expected value.
+        hash_results = _hash_existing(canonical_paths, endpoint_id=endpoint_id, log_fp=log_fp)
 
-        # Stream subprocess output line-by-line instead of buffering until
-        # exit. subprocess.run(capture_output=True) holds 30+ min of stderr
-        # in RAM and only flushes to the log file on process exit, so a
-        # hanging download produces zero on-disk diagnostic until it dies.
-        # Popen + pump threads land each line in the log file as it arrives.
-        log_path = config.ROOT_DIR / "preset_install.log"
-        log_fp = log_path.open("a", buffering=1)
-        log_fp.write(f"\n\n=== {_now_iso()} preset={preset_id} START ===\n")
-        log_fp.write("--- STDERR (streamed) ---\n")
+        cached: list[str] = []
+        missing: list[tuple[dict, str, int]] = []   # (entry, path, expected_bytes)
+        stale: list[tuple[dict, str, int]] = []
+        for entry, path in zip(batch_spec, canonical_paths):
+            actual = hash_results.get(path) if hash_results else None
+            expected_sha = entry.get("sha256")
+            expected_bytes = int(entry.get("_expected_bytes") or 0)
+            if hash_results and actual and expected_sha and actual["sha256"] == expected_sha:
+                cached.append(path)
+            elif hash_results and actual:
+                # file present, but sha mismatch → stale
+                stale.append((entry, path, expected_bytes))
+            else:
+                # file absent OR hash failed (fall back to "submit")
+                missing.append((entry, path, expected_bytes))
 
-        stderr_tail: deque[str] = deque(maxlen=80)
-        stdout_chunks: list[str] = []
+        _install_state.update({
+            "cached_count": len(cached),
+            "missing_count": len(missing),
+            "stale_count": len(stale),
+            "total_download_bytes": sum(b for _, _, b in missing) + sum(b for _, _, b in stale),
+        })
 
-        proc = subprocess.Popen(
-            [
-                "comfy-gen", "download",
-                "--batch", batch_path,
-                "--endpoint-id", endpoint_id,
-                "--timeout", "3600",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
+        # === phase 2: evict stale bytes (sgs-ui-i7j) =======================
+        if stale:
+            stale_paths = [p for _, p, _ in stale]
+            log_fp.write(f"\n[install] {len(stale)} stale file(s) to delete: {stale_paths}\n")
+            del_result = _delete_paths(stale_paths, endpoint_id=endpoint_id, log_fp=log_fp)
+            if not del_result.get("ok"):
+                _install_state.update({
+                    "state": "error",
+                    "completed_at": _now_iso(),
+                    "error": f"failed to delete stale files: {del_result.get('error', 'unknown')}",
+                })
+                return
 
-        def _pump_stderr() -> None:
-            assert proc.stderr is not None
-            for line in iter(proc.stderr.readline, ""):
-                stderr_tail.append(line)
-                log_fp.write(line)
-            proc.stderr.close()
+        # === phase 3: download missing + stale =============================
+        reduced_batch = [_strip_internal_fields(e) for e, _, _ in missing + stale]
+        if reduced_batch:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False, encoding="utf-8"
+            ) as tf:
+                json.dump(reduced_batch, tf)
+                download_batch_path = tf.name
 
-        def _pump_stdout() -> None:
-            assert proc.stdout is not None
-            for line in iter(proc.stdout.readline, ""):
-                stdout_chunks.append(line)
-            proc.stdout.close()
-
-        t_err = threading.Thread(target=_pump_stderr, daemon=True)
-        t_out = threading.Thread(target=_pump_stdout, daemon=True)
-        t_err.start()
-        t_out.start()
-
-        try:
-            returncode = proc.wait(timeout=3600 + 60)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            returncode = proc.wait()
-
-        t_err.join(timeout=5)
-        t_out.join(timeout=5)
-
-        log_fp.write(f"\n=== {_now_iso()} preset={preset_id} returncode={returncode} ===\n")
-        log_fp.write("--- STDOUT ---\n")
-        log_fp.write("".join(stdout_chunks) or "(empty)\n")
-        log_fp.flush()
-        log_fp.close()
-
-        if returncode != 0:
-            err_text = ("".join(stderr_tail) or "".join(stdout_chunks) or "comfy-gen download failed").strip()
-            error = (
-                "...(truncated head)... " + err_text[-3000:]
-                if len(err_text) > 3000
-                else err_text
+            rc, _stdout, stderr_tail = _run_comfy_gen_capture(
+                [
+                    "comfy-gen", "download",
+                    "--batch", download_batch_path,
+                    "--endpoint-id", endpoint_id,
+                    "--timeout", "3600",
+                ],
+                log_fp=log_fp,
+                label="download",
+                timeout=3600 + 60,
             )
-            _install_state.update({
-                "state": "error",
-                "completed_at": _now_iso(),
-                "error": error,
-            })
-            return
+            if rc != 0:
+                err = (stderr_tail or "comfy-gen download failed").strip()
+                _install_state.update({
+                    "state": "error",
+                    "completed_at": _now_iso(),
+                    "error": err[-3000:] if len(err) > 3000 else err,
+                })
+                return
 
-        # Success — persist to Settings.
+        # === phase 4: persist ==============================================
         settings_store.record_installed_preset(
             preset_id=preset_id,
             version=version,
             disk_size_gb=disk_size_gb,
             workflow_json=workflow_json_str,
+            installed_paths=canonical_paths,
         )
         _install_state.update({
             "state": "completed",
@@ -378,10 +555,20 @@ def _run_install_subprocess(
             "error": str(exc)[:2000],
         })
     finally:
-        try:
-            Path(batch_path).unlink(missing_ok=True)  # type: ignore[name-defined]
-        except Exception:
-            pass
+        log_fp.write(f"\n=== {_now_iso()} preset={preset_id} state={_install_state['state']} ===\n")
+        log_fp.flush()
+        log_fp.close()
+        if download_batch_path:
+            try:
+                Path(download_batch_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _strip_internal_fields(entry: dict) -> dict:
+    """Drop underscore-prefixed fields before writing the comfy-gen download
+    spec. The CLI doesn't tolerate unknown fields cleanly."""
+    return {k: v for k, v in entry.items() if not k.startswith("_")}
 
 
 def _fetch_workflow_for_preset(preset: dict) -> dict:
@@ -473,6 +660,13 @@ def install_preset(body: InstallBody) -> JSONResponse:
             # when a file at the target path already hashes to this value).
             if m.get("sha256"):
                 entry["sha256"] = m["sha256"]
+            # zr0: stash the expected byte size on the entry so the hash
+            # pre-flight can compute total_download_bytes for the UI. The
+            # underscore prefix marks it as not-for-the-CLI; _strip_internal_fields
+            # drops it before the spec is written.
+            size_gb = m.get("size_gb")
+            if size_gb is not None:
+                entry["_expected_bytes"] = int(float(size_gb) * (1024 ** 3))
             batch_spec.append(entry)
 
         # Fetch workflow JSON (inline or URL) so it's cached locally for the
@@ -521,11 +715,65 @@ def install_progress() -> JSONResponse:
 
 @router.post("/api/presets/uninstall/{preset_id}")
 def uninstall(preset_id: str) -> JSONResponse:
-    deleted = settings_store.remove_installed_preset(preset_id)
-    if not deleted:
+    """Uninstall a preset.
+
+    sgs-ui-i7j: actually delete the preset's model files on the volume via
+    `comfy-gen delete --batch <paths>` before dropping the Settings row.
+    Legacy rows (recorded before this feature shipped) don't have
+    installed_paths persisted — for those we just drop the Settings row.
+    """
+    installed = settings_store.get_installed_preset(preset_id)
+    if installed is None:
         raise HTTPException(status_code=404, detail=f"preset '{preset_id}' is not installed")
-    # Note: model files on the volume are NOT deleted by this route. The
-    # ComfyGen volume keeps them so re-install is a no-op (comfy-gen download
-    # checks if files exist before re-fetching). User can manually run
-    # comfy-gen list / wipe the volume if they want disk space back.
-    return JSONResponse({"ok": True, "preset_id": preset_id})
+
+    paths = installed.get("installed_paths") or []
+    if not paths:
+        # Legacy row: no paths to delete. Drop the Settings row and return.
+        settings_store.remove_installed_preset(preset_id)
+        return JSONResponse({
+            "ok": True, "preset_id": preset_id,
+            "deleted_count": 0, "errors": [],
+        })
+
+    # Need an active endpoint to issue the delete against.
+    ep = settings_store.get_endpoint("comfygen")
+    if ep is None or not ep.get("endpoint_id"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "no ComfyGen endpoint configured — can't delete preset files. "
+                "Provision an endpoint or clear the preset Settings row manually."
+            ),
+        )
+
+    log_path = config.ROOT_DIR / "preset_install.log"
+    log_fp = log_path.open("a", buffering=1)
+    log_fp.write(f"\n\n=== {_now_iso()} uninstall preset={preset_id} ===\n")
+    try:
+        result = _delete_paths(paths, endpoint_id=ep["endpoint_id"], log_fp=log_fp)
+    finally:
+        log_fp.flush()
+        log_fp.close()
+
+    deleted = [r for r in result.get("results", []) if r.get("deleted")]
+    errors = [r for r in result.get("results", []) if not r.get("deleted")]
+
+    if not result.get("ok") or errors:
+        # Partial / full failure → don't drop the Settings row; let the user retry.
+        return JSONResponse(
+            status_code=207,
+            content={
+                "ok": False, "preset_id": preset_id,
+                "deleted_count": len(deleted),
+                "errors": errors,
+                "error": result.get("error"),
+            },
+        )
+
+    # All paths deleted (or 'not found' which is fine — already gone).
+    settings_store.remove_installed_preset(preset_id)
+    return JSONResponse({
+        "ok": True, "preset_id": preset_id,
+        "deleted_count": len(deleted),
+        "errors": [],
+    })

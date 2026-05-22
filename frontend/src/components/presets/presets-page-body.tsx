@@ -79,9 +79,19 @@ export function PresetsPageBody() {
 
   const handleUninstall = async (presetId: string) => {
     setActionErr(null)
-    if (!confirm(`Uninstall ${presetId}? The Settings record is removed; model files on the ComfyGen volume are kept (re-install is a no-op if files exist).`)) return
+    const installedPreset = installed.find((p) => p.preset_id === presetId)
+    const sizeHint = installedPreset?.disk_size_gb
+      ? ` (~${installedPreset.disk_size_gb} GB on the ComfyGen volume)`
+      : ''
+    if (!confirm(`Uninstall ${presetId}? Model files will be deleted from the ComfyGen volume${sizeHint}.`)) return
     try {
-      await uninstallPreset(presetId)
+      const result = await uninstallPreset(presetId)
+      if (!result.ok && result.errors.length > 0) {
+        const detail = result.errors
+          .map((e) => `${e.path}: ${e.error || 'failed'}`)
+          .join('\n')
+        setActionErr(`Partial uninstall: ${result.deleted_count} deleted, ${result.errors.length} failed.\n${detail}`)
+      }
       await refresh()
     } catch (err) {
       setActionErr(err instanceof Error ? err.message : String(err))
@@ -157,6 +167,13 @@ export function PresetsPageBody() {
 }
 
 function InstallProgressCard({ progress }: { progress: InstallProgress }) {
+  const cached = progress.cached_count ?? 0
+  const missing = progress.missing_count ?? 0
+  const stale = progress.stale_count ?? 0
+  const downloadGB = progress.total_download_bytes
+    ? (progress.total_download_bytes / 1024 ** 3).toFixed(1)
+    : null
+  const hashRan = cached + missing + stale > 0
   return (
     <article className="rounded border border-primary/30 bg-primary/5 p-4 space-y-2">
       <div className="flex items-center justify-between">
@@ -172,6 +189,14 @@ function InstallProgressCard({ progress }: { progress: InstallProgress }) {
       <p className="text-xs text-muted-foreground">
         {progress.files_total} file(s) total · started {progress.started_at}
       </p>
+      {hashRan && (
+        <p className="text-xs text-muted-foreground">
+          {cached} cached
+          {missing > 0 && ` · ${missing} to download`}
+          {stale > 0 && ` · ${stale} stale (will be replaced)`}
+          {downloadGB && ` · ~${downloadGB} GB`}
+        </p>
+      )}
       {progress.error && (
         <p className="text-xs text-destructive whitespace-pre-wrap">{progress.error}</p>
       )}
