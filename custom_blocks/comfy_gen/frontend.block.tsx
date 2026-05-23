@@ -28,6 +28,7 @@ import {
   listInstalledPresets,
   type InstalledPresetSummary,
 } from '@/lib/settings/client'
+import { PresetRecommendationsTooltip } from '@/components/pipeline/preset-recommendations-tooltip'
 import {
   Select,
   SelectContent,
@@ -560,6 +561,14 @@ function ComfyGenBlock({
   // workflow + tracked-models bundle from the local Settings.
   const [installedPresets, setInstalledPresets] = useState<InstalledPresetSummary[]>([])
   const [selectedPresetId, setSelectedPresetId] = useSessionState(`block_${blockId}_selected_preset`, '')
+  // sgs-ui-fmy: snapshot of the applied preset's recommendations so the
+  // tooltip survives re-mounts. {global, workflow} arrays; empty when the
+  // current workflow wasn't loaded from a preset or the preset shipped
+  // without any recommendations.
+  const [presetRecommendations, setPresetRecommendations] = useSessionState<{
+    global: string[]
+    workflow: string[]
+  }>(`block_${blockId}_preset_recommendations`, { global: [], workflow: [] })
   const [presetApplying, setPresetApplying] = useState(false)
   const [presetApplyError, setPresetApplyError] = useState('')
   const [ksamplers, setKsamplers] = useSessionState<KSamplerInfo[]>(`block_${blockId}_ksamplers`, [])
@@ -1066,11 +1075,15 @@ function ComfyGenBlock({
     const text = await file.text()
     setWorkflowJson(text)
     setWorkflowName(file.name)
+    // sgs-ui-fmy: a user-loaded JSON isn't tied to a preset — clear any
+    // recommendations carried over from a prior preset apply so the
+    // tooltip doesn't lie about the current workflow.
+    setPresetRecommendations({ global: [], workflow: [] })
     const detectedType = await parseWorkflow(text)
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
     }
-  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName])
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName, setPresetRecommendations])
 
   // Refresh the installed-preset list on mount + whenever the user mounts
   // (cheap GET; the data is from local Settings).
@@ -1100,6 +1113,14 @@ function ComfyGenBlock({
       resetRuntimeFromBlock(blockId, { preserveOutputHint: true })
       setWorkflowJson(json)
       setWorkflowName(`${presetId} · ${chosen.name}`)
+      // sgs-ui-fmy: surface author recommendations next to the workflow
+      // line. recommendations.workflows is keyed by the workflow's display
+      // name (matches `chosen.name`).
+      const recs = detail.recommendations || { global: [], workflows: {} }
+      setPresetRecommendations({
+        global: recs.global || [],
+        workflow: (recs.workflows && recs.workflows[chosen.name]) || [],
+      })
       const detectedType = await parseWorkflow(json)
       if (detectedType === 'image' || detectedType === 'video') {
         setOutput(detectedType, makePendingOutput(detectedType))
@@ -1109,7 +1130,7 @@ function ComfyGenBlock({
     } finally {
       setPresetApplying(false)
     }
-  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName])
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName, setPresetRecommendations])
 
   const handlePngFile = useCallback(async (file: File) => {
     setWorkflowError('')
@@ -1130,11 +1151,13 @@ function ComfyGenBlock({
     // is rarely meaningful since the workflow was extracted from the image's
     // metadata, not the file's content.
     setWorkflowName('PNG Workflow')
+    // sgs-ui-fmy: PNG-extracted workflows have no preset behind them.
+    setPresetRecommendations({ global: [], workflow: [] })
     const detectedType = await parseWorkflow(json)
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
     }
-  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setWorkflowJson, setWorkflowName, setOutput])
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setWorkflowJson, setWorkflowName, setOutput, setPresetRecommendations])
 
   // Polling helper with progress updates
   // onProgress callback used during batch mode to route status to per-job tracking
@@ -1719,6 +1742,13 @@ function ComfyGenBlock({
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <span>Current workflow:</span>
           <span className="font-medium text-foreground truncate">{workflowName}</span>
+          {/* sgs-ui-fmy: lightbulb icon hidden entirely when both scopes are
+              empty (no recommendations applicable to the current workflow). */}
+          <PresetRecommendationsTooltip
+            workflowName={workflowName}
+            globalRecs={presetRecommendations.global}
+            workflowRecs={presetRecommendations.workflow}
+          />
         </div>
       )}
 

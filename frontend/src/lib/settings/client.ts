@@ -304,10 +304,20 @@ export type InstalledPresetWorkflow = {
   json: Record<string, unknown>
 }
 
+// sgs-ui-fmy: optional prose tips authored alongside the preset. Scoped
+// either globally (apply to every workflow) or per-workflow (keyed by the
+// workflow's display name). Both scopes are always present in the response
+// — empty list / empty object when the preset shipped without recommendations.
+export type PresetRecommendations = {
+  global: string[]
+  workflows: Record<string, string[]>
+}
+
 export type InstalledPresetDetail = InstalledPresetSummary & {
   // Always a list since sgs-ui-chf. Pre-chf rows are normalized server-side
   // to a single-entry list with name='Default'.
   workflow_json: InstalledPresetWorkflow[]
+  recommendations: PresetRecommendations
 }
 
 export async function getPresetManifest(opts: { refresh?: boolean } = {}): Promise<PresetManifest> {

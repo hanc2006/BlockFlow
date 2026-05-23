@@ -691,4 +691,35 @@ describe('getInstalledPreset', () => {
 
     await expect(getInstalledPreset('foo')).rejects.toThrow(/not installed/)
   })
+
+  // sgs-ui-fmy
+  test('returns recommendations field when present', async () => {
+    const fetchMock = mockFetch([
+      {
+        body: JSON.stringify({
+          preset_id: 'wan-animate',
+          version: '0.1.0',
+          disk_size_gb: 30,
+          installed_at: '2026-05-21T10:00:00',
+          updated_at: '2026-05-21T10:00:00',
+          workflow_json: [
+            { name: 'Replace Face', json: { '3': { class_type: 'WanAnimate' } } },
+          ],
+          recommendations: {
+            global: ['Pairs best with a character LoRA'],
+            workflows: {
+              'Replace Face': ['Bump mask coverage for tight crops'],
+            },
+          },
+        }),
+      },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await getInstalledPreset('wan-animate')
+    expect(result.recommendations).toEqual({
+      global: ['Pairs best with a character LoRA'],
+      workflows: { 'Replace Face': ['Bump mask coverage for tight crops'] },
+    })
+  })
 })
