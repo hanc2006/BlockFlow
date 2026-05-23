@@ -371,6 +371,10 @@ export type InstallProgress = {
   missing_count?: number
   stale_count?: number
   total_download_bytes?: number
+  // sgs-ui-hh9: rolling tail of the current subprocess's stderr (last ~30
+  // lines). Updated live by the pump thread so the UI can render a log
+  // block while the install is mid-flight.
+  log_tail?: string
 }
 
 export async function getPresetDetail(presetId: string): Promise<PresetDetail> {
