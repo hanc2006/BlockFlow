@@ -188,8 +188,17 @@ _install_state: dict[str, Any] = {
     "missing_count": 0,
     "stale_count": 0,
     "total_download_bytes": 0,
+    # sgs-ui-hh9: rolling tail (last ~30 lines) of the current subprocess's
+    # stderr. Updated live by _run_comfy_gen_capture's pump thread so
+    # /api/presets/install/progress can render a live log block while the
+    # install is mid-flight.
+    "log_tail": "",
 }
 _install_lock = threading.Lock()
+
+# How many lines of stderr to keep in _install_state["log_tail"]. ~30 lines
+# fits a small UI panel; bigger inflates /progress responses unnecessarily.
+_LOG_TAIL_MAXLEN = 30
 
 
 def _reset_install_state() -> None:
@@ -205,6 +214,7 @@ def _reset_install_state() -> None:
         "missing_count": 0,
         "stale_count": 0,
         "total_download_bytes": 0,
+        "log_tail": "",
     })
 
 
@@ -311,6 +321,10 @@ def _run_comfy_gen_capture(
         bufsize=1,
     )
     stderr_tail: deque[str] = deque(maxlen=80)
+    # sgs-ui-hh9: separate, smaller rolling tail surfaced to /progress (the
+    # 80-line stderr_tail above is the on-failure error payload; this one
+    # is the live UI feed).
+    ui_tail: deque[str] = deque(maxlen=_LOG_TAIL_MAXLEN)
     stdout_chunks: list[str] = []
 
     def _pump_stderr() -> None:
@@ -318,6 +332,11 @@ def _run_comfy_gen_capture(
         try:
             for line in iter(proc.stderr.readline, ""):
                 stderr_tail.append(line)
+                ui_tail.append(line)
+                # Atomic dict-item write under the GIL — safe to do from the
+                # pump thread without locking. The /progress reader sees a
+                # consistent snapshot of whatever lines have arrived so far.
+                _install_state["log_tail"] = "".join(ui_tail)
                 log_fp.write(line)
         except ValueError:
             # Pipe got closed under us — e.g., proc.kill() during a timeout
@@ -716,6 +735,13 @@ def install_preset(body: InstallBody) -> JSONResponse:
             "completed_at": None,
             "files_total": len(batch_spec),
             "error": None,
+            # sgs-ui-hh9: clear the rolling stderr tail so a prior install's
+            # log doesn't bleed into this run's /progress display.
+            "log_tail": "",
+            "cached_count": 0,
+            "missing_count": 0,
+            "stale_count": 0,
+            "total_download_bytes": 0,
         })
 
     # Kick off the subprocess in a daemon thread so the HTTP response

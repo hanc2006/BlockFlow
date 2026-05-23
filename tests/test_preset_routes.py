@@ -561,6 +561,94 @@ def test_install_progress_returns_current_state(client):
     assert body["files_total"] == 4
 
 
+# === Stage B: install log tail (sgs-ui-hh9) =================================
+# The download subprocess streams comfy-gen's stderr (RunPod job progress —
+# "[15s] Downloading 1/4: foo.safetensors 42% (188MiB/s)") via the pump
+# thread. _install_state["log_tail"] mirrors that to the UI so /progress
+# polls can render a live log block under the InstallProgressCard.
+
+def test_install_state_log_tail_populated_from_stderr(client, install_ready, mocker):
+    """As the download subprocess emits stderr lines, _install_state['log_tail']
+    accumulates them. After install completes the field carries the rolling
+    tail of what was streamed."""
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(side_effect=[
+                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
+                            _mock_response(QWEN_FULL_PRESET),
+                        ]))
+    progress_lines = "".join(f"[{n}s] Downloading 1/2: foo.safetensors {n*5}%\n" for n in range(1, 6))
+
+    def _popen_side_effect(args, *a, **kw):
+        if args[:2] == ["comfy-gen", "hash"]:
+            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
+        # Download subprocess: emit progress lines on stderr.
+        return _make_fake_popen(stdout='{"ok": true}', stderr=progress_lines, returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+
+    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    assert preset_routes._install_state["state"] == "completed"
+    tail = preset_routes._install_state.get("log_tail") or ""
+    # Each emitted progress line must show up in the tail.
+    for n in range(1, 6):
+        assert f"[{n}s] Downloading 1/2: foo.safetensors {n*5}%" in tail
+
+
+def test_install_state_log_tail_reset_between_installs(client, install_ready, mocker):
+    """Stale tail from a prior failed install must NOT bleed into the next
+    install's progress display."""
+    preset_routes._install_state["log_tail"] = "STALE PRIOR INSTALL OUTPUT\n"
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(side_effect=[
+                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
+                            _mock_response(QWEN_FULL_PRESET),
+                        ]))
+    def _popen_side_effect(args, *a, **kw):
+        if args[:2] == ["comfy-gen", "hash"]:
+            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
+        return _make_fake_popen(stdout='{"ok": true}', stderr="[1s] fresh line\n", returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+
+    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    tail = preset_routes._install_state.get("log_tail") or ""
+    assert "STALE PRIOR INSTALL OUTPUT" not in tail
+    assert "[1s] fresh line" in tail
+
+
+def test_install_state_log_tail_truncated_to_bound(client, install_ready, mocker):
+    """A 30-minute download emits thousands of progress lines. The tail
+    must stay bounded so /progress responses don't bloat."""
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(side_effect=[
+                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
+                            _mock_response(QWEN_FULL_PRESET),
+                        ]))
+    # Emit 200 lines on stderr.
+    spam = "".join(f"line {n}\n" for n in range(200))
+    def _popen_side_effect(args, *a, **kw):
+        if args[:2] == ["comfy-gen", "hash"]:
+            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
+        return _make_fake_popen(stdout='{"ok": true}', stderr=spam, returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+
+    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    tail = preset_routes._install_state.get("log_tail") or ""
+    line_count = tail.count("\n")
+    # Last 30 lines is the contract; allow ±5 for off-by-one safety.
+    assert 25 <= line_count <= 35, f"expected ~30 lines in tail, got {line_count}"
+    # The latest line must be present; an early line must not be.
+    assert "line 199" in tail
+    assert "line 0" not in tail
+
+
 # === Stage B: multi-workflow presets (sgs-ui-chf) ===========================
 
 def test_install_persists_workflows_array_with_names(client, install_ready, mocker):

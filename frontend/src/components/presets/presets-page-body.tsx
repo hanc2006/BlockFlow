@@ -197,6 +197,11 @@ function InstallProgressCard({ progress }: { progress: InstallProgress }) {
           {downloadGB && ` · ~${downloadGB} GB`}
         </p>
       )}
+      {progress.log_tail && progress.state !== 'completed' && (
+        <pre className="mt-1 max-h-44 overflow-y-auto rounded bg-muted/30 px-2 py-1.5 font-mono text-[10px] leading-snug text-muted-foreground whitespace-pre-wrap break-all">
+          {progress.log_tail}
+        </pre>
+      )}
       {progress.error && (
         <p className="text-xs text-destructive whitespace-pre-wrap">{progress.error}</p>
       )}
