@@ -470,12 +470,14 @@ def test_install_persists_to_settings_on_success(client, install_ready, mocker):
     assert ep is not None
     assert ep["version"] == "0.2.0"
     assert ep["disk_size_gb"] == 55
-    # workflow_json is now persisted as a JSON-encoded list of {name, json}
-    # entries (sgs-ui-chf). Workflow URL fetch isn't separately mocked here so
-    # the inner json can be empty; what matters is that the column was
-    # populated and carries the canonical 'Default' entry.
+    # workflow_json is now persisted as a JSON-encoded wrapper
+    # {workflows: [...], recommendations: {...}} (sgs-ui-fmy). Workflow URL
+    # fetch isn't separately mocked here so the inner json can be empty;
+    # what matters is that the column was populated and carries the
+    # canonical 'Default' entry under the workflows list.
     import json as _json
-    workflows = _json.loads(ep["workflow_json"])
+    blob = _json.loads(ep["workflow_json"])
+    workflows = blob["workflows"]
     assert isinstance(workflows, list)
     assert len(workflows) == 1
     assert workflows[0]["name"] == "Default"
@@ -689,7 +691,7 @@ def test_install_persists_workflows_array_with_names(client, install_ready, mock
 
     persisted = settings_store.get_installed_preset("wan-animate")
     assert persisted is not None
-    workflows = json.loads(persisted["workflow_json"])
+    workflows = json.loads(persisted["workflow_json"])["workflows"]
     assert workflows == [
         {"name": "I2V", "json": wf_i2v},
         {"name": "V2V", "json": wf_v2v},
@@ -722,7 +724,7 @@ def test_install_inline_workflow_skips_fetch(client, install_ready, mocker):
     _wait_for_install_state("completed", "error")
 
     persisted = settings_store.get_installed_preset("inline-flow")
-    workflows = json.loads(persisted["workflow_json"])
+    workflows = json.loads(persisted["workflow_json"])["workflows"]
     assert workflows == [{"name": "Default", "json": inline}]
 
 
@@ -1162,3 +1164,126 @@ def test_install_proceeds_when_disk_budget_unknown(client, install_ready, mocker
 
     r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
     assert r.status_code == 202
+
+
+# === sgs-ui-fmy: preset recommendations =====================================
+# Presets may carry author-supplied prose tips, scoped either globally
+# (apply to every workflow in the preset) or per-workflow (apply to one
+# specific workflow). Both scopes are optional and may be empty.
+# Surfaced to the UI via /api/presets/installed/{id} response shape.
+
+def test_get_installed_detail_returns_empty_recommendations_when_absent(client):
+    """Legacy / current rows without recommendations still respond with the
+    `recommendations` field — empty global + empty workflows map — so the
+    frontend doesn't need to special-case missing data."""
+    settings_store.record_installed_preset(
+        preset_id="no-recs",
+        version="0.1.0",
+        disk_size_gb=10,
+        workflow_json=json.dumps([{"name": "Default", "json": {"3": {}}}]),
+    )
+    r = client.get("/api/presets/installed/no-recs")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["recommendations"] == {"global": [], "workflows": {}}
+
+
+def test_get_installed_detail_returns_recommendations_when_present(client):
+    """When a preset row stores the wrapper shape with recommendations,
+    the detail endpoint exposes both the global list and the per-workflow
+    map keyed by workflow name."""
+    wrapper = {
+        "workflows": [
+            {"name": "Replace Face", "json": {"3": {"class_type": "Sampler"}}},
+            {"name": "Move", "json": {"3": {"class_type": "Sampler"}}},
+        ],
+        "recommendations": {
+            "global": ["This preset works best with a character LoRA"],
+            "workflows": {
+                "Replace Face": ["Consider changing the mask area for better coverage"],
+            },
+        },
+    }
+    settings_store.record_installed_preset(
+        preset_id="wan-animate",
+        version="0.1.0",
+        disk_size_gb=10,
+        workflow_json=json.dumps(wrapper),
+    )
+    r = client.get("/api/presets/installed/wan-animate")
+    assert r.status_code == 200
+    body = r.json()
+    # workflow_json is still the bare list of {name, json} entries.
+    assert body["workflow_json"] == wrapper["workflows"]
+    assert body["recommendations"] == wrapper["recommendations"]
+
+
+def test_install_persists_recommendations_from_preset_json(client, install_ready, mocker):
+    """preset.recommendations at the root of preset.json is persisted alongside
+    the workflows[] list so the ComfyGen block can surface them inline."""
+    preset = {
+        **QWEN_FULL_PRESET,
+        "id": "wan-animate",
+        "workflows": [
+            {"name": "Replace Face", "json": {"3": {"class_type": "WanAnimate"}}},
+        ],
+        "recommendations": {
+            "global": ["Pairs best with a character LoRA"],
+            "workflows": {
+                "Replace Face": ["Bump mask coverage for tight crops"],
+            },
+        },
+    }
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([{**_qwen_preset_entry(), "id": "wan-animate", "preset_url": "https://example/preset.json"}]))
+        if "preset.json" in url:
+            return _mock_response(preset)
+        return _mock_response({}, status=404)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
+    def _popen_side_effect(args, *a, **kw):
+        if args[:2] == ["comfy-gen", "hash"]:
+            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
+        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+
+    r = client.post("/api/presets/install", json={"preset_id": "wan-animate"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    # Detail endpoint exposes the same shape end-to-end.
+    detail = client.get("/api/presets/installed/wan-animate").json()
+    assert detail["recommendations"] == {
+        "global": ["Pairs best with a character LoRA"],
+        "workflows": {
+            "Replace Face": ["Bump mask coverage for tight crops"],
+        },
+    }
+    # And the workflows list is untouched by the recommendations addition.
+    assert detail["workflow_json"] == [
+        {"name": "Replace Face", "json": {"3": {"class_type": "WanAnimate"}}},
+    ]
+
+
+def test_install_without_recommendations_persists_empty(client, install_ready, mocker):
+    """A preset without a `recommendations` field still installs cleanly;
+    the detail endpoint surfaces empty scopes (not null / missing)."""
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([_qwen_preset_entry()]))
+        if "preset.json" in url or "example" in url:
+            return _mock_response(QWEN_FULL_PRESET)
+        return _mock_response({}, status=404)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
+    def _popen_side_effect(args, *a, **kw):
+        if args[:2] == ["comfy-gen", "hash"]:
+            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
+        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+
+    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    detail = client.get("/api/presets/installed/qwen-image-lighting").json()
+    assert detail["recommendations"] == {"global": [], "workflows": {}}

@@ -165,7 +165,13 @@ def get_installed(preset_id: str) -> JSONResponse:
         raise HTTPException(status_code=404, detail=f"preset '{preset_id}' is not installed")
     # workflow_json is stored as a string; normalize to the list-of-{name,json}
     # shape so callers don't have to handle the legacy dict form themselves.
-    return JSONResponse({**row, "workflow_json": _normalize_stored_workflows(row["workflow_json"])})
+    # sgs-ui-fmy: recommendations live inside the same wrapper blob (or empty
+    # when the row predates that field).
+    return JSONResponse({
+        **row,
+        "workflow_json": _normalize_stored_workflows(row["workflow_json"]),
+        "recommendations": _normalize_stored_recommendations(row["workflow_json"]),
+    })
 
 
 # === Stage B: install + uninstall ============================================
@@ -622,12 +628,36 @@ def _fetch_workflows_for_preset(preset: dict) -> list[dict]:
     return out
 
 
+def _extract_recommendations(preset: dict) -> dict:
+    """sgs-ui-fmy: pull preset.recommendations into the canonical
+    {global: [...], workflows: {<name>: [...]}} shape. Missing field, wrong
+    shapes, or non-string entries are silently dropped — preset authors get
+    no validation feedback yet (the registry's preset.schema.json is the
+    authoring guardrail). Returns the empty wrapper when nothing usable is
+    present so consumers don't need to special-case None."""
+    raw = preset.get("recommendations")
+    if not isinstance(raw, dict):
+        return {"global": [], "workflows": {}}
+    global_list = raw.get("global")
+    workflow_map = raw.get("workflows")
+    return {
+        "global": [str(s) for s in global_list if isinstance(s, str)]
+                  if isinstance(global_list, list) else [],
+        "workflows": {
+            str(k): [str(s) for s in v if isinstance(s, str)]
+            for k, v in workflow_map.items()
+            if isinstance(v, list)
+        } if isinstance(workflow_map, dict) else {},
+    }
+
+
 def _normalize_stored_workflows(raw: str | None) -> list[dict]:
     """Read-path tolerance for legacy rows. Pre-sgs-ui-chf rows stored a
-    single workflow dict in workflow_json; new rows store a list of
-    {name, json} entries. Always return the list shape so consumers
-    (ComfyGen block dropdown, /api/presets/installed/{id}) can treat
-    them uniformly."""
+    single workflow dict in workflow_json; sgs-ui-chf rows store a list of
+    {name, json} entries; sgs-ui-fmy rows store a wrapper
+    {workflows: [...], recommendations: {...}}. Always return the list shape
+    so consumers (ComfyGen block dropdown, /api/presets/installed/{id}) can
+    treat them uniformly."""
     if not raw:
         return []
     try:
@@ -635,11 +665,44 @@ def _normalize_stored_workflows(raw: str | None) -> list[dict]:
     except (ValueError, json.JSONDecodeError):
         return []
     if isinstance(parsed, dict):
-        # Legacy: wrap as a single 'Default' workflow.
+        # sgs-ui-fmy wrapper: {workflows: [...], recommendations: {...}}.
+        if isinstance(parsed.get("workflows"), list):
+            return parsed["workflows"]
+        # Legacy: wrap a bare workflow dict as a single 'Default' workflow.
         return [{"name": "Default", "json": parsed}]
     if isinstance(parsed, list):
         return parsed
     return []
+
+
+def _normalize_stored_recommendations(raw: str | None) -> dict:
+    """Read-path for the sgs-ui-fmy `recommendations` field. Returns the
+    canonical {global: [...], workflows: {...}} shape regardless of whether
+    the row was written before or after the wrapper landed — missing /
+    legacy rows surface as empty scopes so the frontend doesn't need to
+    special-case absent data."""
+    empty = {"global": [], "workflows": {}}
+    if not raw:
+        return empty
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        return empty
+    if not isinstance(parsed, dict):
+        return empty
+    recs = parsed.get("recommendations")
+    if not isinstance(recs, dict):
+        return empty
+    global_recs = recs.get("global")
+    workflow_recs = recs.get("workflows")
+    return {
+        "global": [str(s) for s in global_recs] if isinstance(global_recs, list) else [],
+        "workflows": {
+            str(k): [str(s) for s in v]
+            for k, v in workflow_recs.items()
+            if isinstance(v, list)
+        } if isinstance(workflow_recs, dict) else {},
+    }
 
 
 @router.post("/api/presets/install")
@@ -727,6 +790,13 @@ def install_preset(body: InstallBody) -> JSONResponse:
         # per preset is the canonical shape (sgs-ui-chf); the list keeps the
         # author-supplied display names ('I2V', 'V2V', 'Default', etc.).
         workflows = _fetch_workflows_for_preset(preset)
+        # sgs-ui-fmy: wrap workflows + author recommendations into a single
+        # blob so both land atomically in the same workflow_json column on
+        # install. The detail endpoint unpacks back into two fields.
+        stored_blob = {
+            "workflows": workflows,
+            "recommendations": _extract_recommendations(preset),
+        }
 
         _install_state.update({
             "state": "queued",
@@ -752,7 +822,7 @@ def install_preset(body: InstallBody) -> JSONResponse:
             preset_id=body.preset_id,
             version=preset.get("comfygen_min_version", "0.0.0"),
             disk_size_gb=preset.get("disk_size_estimate_gb", 0),
-            workflow_json_str=json.dumps(workflows),
+            workflow_json_str=json.dumps(stored_blob),
             batch_spec=batch_spec,
             endpoint_id=ep["endpoint_id"],
         )
