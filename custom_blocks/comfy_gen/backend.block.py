@@ -512,6 +512,7 @@ _KNOWN_LATENT_NODES = {
     "EmptyLatentImage", "SDXLEmptyLatentSizePicker+",
     "EmptyLTXVLatentVideo", "EmptySD3LatentImage",
     "EmptyFlux2LatentImage",
+    "WanAnimateToVideo",
 }
 
 _PRIMITIVE_TYPES = {"PrimitiveInt", "PrimitiveFloat", "Primitive int [Crystools]"}
