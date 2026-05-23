@@ -517,30 +517,37 @@ function ComfyGenBlock({
     localStorage.setItem(ENDPOINT_KEY, v)
   }, [])
 
-  // sgs-ui-chf: Advanced mode (workspace-wide toggle). When OFF (default):
-  // preset dropdown is the only loader; Load JSON / From PNG / Auto button /
-  // endpoint editor are hidden. Toggled via the gear icon in the header.
+  // sgs-ui-chf: Advanced mode (workspace-wide via localStorage). When OFF
+  // (default): preset dropdown is the only loader; Load JSON / From PNG /
+  // Auto button / endpoint editor are hidden. Toggled via the gear icon.
+  //
+  // Same-tab sync across multiple mounted ComfyGen blocks: a custom event
+  // ('comfy-gen:advanced-mode-changed'). The native 'storage' event only
+  // fires across tabs, never on the tab that wrote the value.
   const [advancedMode, setAdvancedMode] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     return localStorage.getItem('comfy_gen_advanced_mode') === '1'
   })
   const toggleAdvancedMode = useCallback(() => {
-    setAdvancedMode((prev) => {
-      const next = !prev
-      localStorage.setItem('comfy_gen_advanced_mode', next ? '1' : '0')
-      // Notify other mounted ComfyGen blocks in the same tab so they re-render.
-      window.dispatchEvent(new StorageEvent('storage', { key: 'comfy_gen_advanced_mode', newValue: next ? '1' : '0' }))
-      return next
-    })
+    const next = localStorage.getItem('comfy_gen_advanced_mode') !== '1'
+    localStorage.setItem('comfy_gen_advanced_mode', next ? '1' : '0')
+    setAdvancedMode(next)
+    window.dispatchEvent(new CustomEvent('comfy-gen:advanced-mode-changed', { detail: { value: next } }))
   }, [])
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'comfy_gen_advanced_mode') {
-        setAdvancedMode(e.newValue === '1')
-      }
+    const onCustom = (e: Event) => {
+      const ce = e as CustomEvent<{ value: boolean }>
+      setAdvancedMode(Boolean(ce.detail?.value))
     }
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'comfy_gen_advanced_mode') setAdvancedMode(e.newValue === '1')
+    }
+    window.addEventListener('comfy-gen:advanced-mode-changed', onCustom)
     window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener('comfy-gen:advanced-mode-changed', onCustom)
+      window.removeEventListener('storage', onStorage)
+    }
   }, [])
 
   // Endpoint chip — display mode vs inline-edit mode (only relevant in
