@@ -118,6 +118,51 @@ def _rest_delete(api_key: str, path: str) -> dict[str, Any]:
     return resp.json() if resp.text else {}
 
 
+# === pods (sgs-ui-c7n: installer-pod sweeper) ================================
+
+def list_pods(api_key: str) -> list[dict[str, Any]]:
+    """Return every pod visible to the given API key. Used by the
+    installer-pod sweeper to find orphaned `comfygen-installer-*` pods
+    after the BlockFlow process that spawned them is gone.
+
+    Shape comes from RunPod REST `/v1/pods`: each entry has at least
+    `id`, `name`, `createdAt` (RFC3339), plus other lifecycle fields
+    the sweeper doesn't need.
+    """
+    data = _rest_get(api_key, "/pods")
+    if isinstance(data, list):
+        return data
+    # Some accounts wrap in {"pods": [...]} — defensive.
+    if isinstance(data, dict) and isinstance(data.get("pods"), list):
+        return data["pods"]
+    return []
+
+
+def delete_pod(api_key: str, pod_id: str) -> bool:
+    """DELETE one pod. Returns True if it's gone (success or already 404),
+    False on any other error.
+
+    HTTP 404 → idempotent success; the sweeper races with the CLI's own
+    cleanup all the time, that's expected.
+    """
+    try:
+        resp = _cffi_requests.delete(
+            f"{REST_BASE}/pods/{pod_id}",
+            headers=_headers(api_key),
+            timeout=REQUEST_TIMEOUT,
+        )
+    except Exception as exc:
+        raise RunPodAPIError(f"network error: {exc}") from exc
+
+    if resp.status_code == 404:
+        return True
+    if resp.status_code >= 400:
+        raise RunPodAPIError(
+            f"REST HTTP {resp.status_code} DELETE /pods/{pod_id}: {resp.text[:800]}"
+        )
+    return True
+
+
 def _rest_get(api_key: str, path: str) -> dict[str, Any]:
     try:
         resp = _cffi_requests.get(

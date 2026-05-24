@@ -406,6 +406,35 @@ def get_installed_preset(preset_id: str) -> dict | None:
     return d
 
 
+def get_installed_preset_by_pod_id(pod_id: str) -> dict | None:
+    """sgs-ui-c7n: reverse lookup used by the installer-pod sweeper to
+    classify a live RunPod pod as 'tracked + completed' (DELETE immediately)
+    vs 'untracked' (DELETE after the orphan age threshold).
+
+    Only successful installs land in this table — failed/cancelled installs
+    leave no row behind, so a pod with no matching preset_id row and no
+    in-process state is the sweeper's 'orphan' case.
+    """
+    if not pod_id:
+        return None
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT preset_id, version, disk_size_gb, pod_id, install_mode,
+                   cost_per_hr_at_spawn, installed_at, updated_at
+            FROM settings_installed_presets
+            WHERE pod_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (pod_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
 def remove_installed_preset(preset_id: str) -> bool:
     """Drop the row. Returns True if a row was deleted."""
     with _lock:

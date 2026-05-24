@@ -649,6 +649,15 @@ def _run_install_subprocess(
                 "completed_at": _now_iso(),
                 "error": None,
             })
+            # sgs-ui-c7n trigger #2: tear the pod down immediately on
+            # success. Idempotent — if the CLI's own DELETE already landed
+            # this is a 404 no-op. Local import dodges the circular module
+            # graph at import time.
+            try:
+                from backend import installer_pod_sweeper as _sweeper
+                _sweeper.delete_pod_post_install(_install_state.get("pod_id"))
+            except Exception as exc:
+                print(f"[preset-install] post-install pod delete failed: {exc}")
             return
 
         # Failure paths.

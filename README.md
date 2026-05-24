@@ -93,6 +93,15 @@ DEFAULT_WRITER_MAX_TOKENS=100000    # Max token limit
 APP_MAX_PARALLEL_WORKERS=6          # Max concurrent generation jobs
 RUNPOD_POLL_INTERVAL_SEC=4          # Status polling interval (seconds)
 RUNPOD_POLL_TIMEOUT_SEC=2400        # Max wait time per job (seconds)
+
+# Preset installer-pod sweeper (sgs-ui-c7n) — belt-and-suspenders cleanup
+# for the CPU pods spawned by `comfy-gen install-preset`. Periodically
+# DELETEs orphaned / stuck / completed installer pods so a missed cleanup
+# can't bill $0.06/hr forever.
+INSTALLER_SWEEP_INTERVAL_SEC=60     # How often the sweeper runs
+INSTALLER_SWEEP_ORPHAN_MIN=5        # Untracked pods older than this → DELETE
+INSTALLER_SWEEP_STUCK_MIN=60        # In-flight installs older than this → DELETE
+INSTALLER_POD_NAME_PREFIX=comfygen-installer  # Only sweep pods with this prefix
 ```
 
 ### ComfyUI Setup
