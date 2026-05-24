@@ -882,14 +882,20 @@ function ComfyGenBlock({
     outputKind: 'image' | 'video',
     upstreamInsertCount: number = 0,
   ) => {
-    const myIndex = getMyIndex() + upstreamInsertCount
+    // Dedupe against the stale pipeline.blocks layout, where the ComfyGen
+    // still sits at its pre-upstream-insert position. Slicing at
+    // (myIndex + upstreamInsertCount + 1) here would skip past existing
+    // downstream blocks in the stale array and spawn a duplicate viewer.
+    const staleMyIndex = getMyIndex()
     const viewerType = outputKind === 'video' ? 'videoViewer' : 'imageViewer'
     const downstreamTypes = new Set(
-      pipeline.blocks.slice(myIndex + 1).map((b) => b.type)
+      pipeline.blocks.slice(staleMyIndex + 1).map((b) => b.type)
     )
-    if (!downstreamTypes.has(viewerType)) {
-      addBlock(viewerType, myIndex + 1)
-    }
+    if (downstreamTypes.has(viewerType)) return
+
+    // Insert at the post-upstream position so the viewer lands AFTER the
+    // ComfyGen once the queued updatePipeline calls flush.
+    addBlock(viewerType, staleMyIndex + upstreamInsertCount + 1)
   }, [getMyIndex, pipeline.blocks, addBlock])
 
   // Parse workflow to detect LoadImage/LoadVideo nodes, KSamplers, empty prompts
