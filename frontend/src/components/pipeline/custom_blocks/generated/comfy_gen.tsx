@@ -865,6 +865,21 @@ function ComfyGenBlock({
     }
   }, [getMyIndex, pipeline.blocks, addBlock])
 
+  // sgs-ui-m6c: mirror of addUpstreamBlocks, downstream side. When a workflow
+  // emits an image / video, drop the matching viewer immediately after this
+  // block unless one already exists downstream — saves the user a manual
+  // "add Video Viewer" step every time they swap presets.
+  const addDownstreamViewer = useCallback((outputKind: 'image' | 'video') => {
+    const myIndex = getMyIndex()
+    const viewerType = outputKind === 'video' ? 'videoViewer' : 'imageViewer'
+    const downstreamTypes = new Set(
+      pipeline.blocks.slice(myIndex + 1).map((b) => b.type)
+    )
+    if (!downstreamTypes.has(viewerType)) {
+      addBlock(viewerType, myIndex + 1)
+    }
+  }, [getMyIndex, pipeline.blocks, addBlock])
+
   // Parse workflow to detect LoadImage/LoadVideo nodes, KSamplers, empty prompts
   const parseWorkflow = useCallback(async (json: string): Promise<'image' | 'video' | 'unknown' | ''> => {
     try {
@@ -963,6 +978,13 @@ function ComfyGenBlock({
         const otype = (data.output_type as string) || 'unknown'
         setOutputType(otype)
         setOutputHint?.(otype !== 'unknown' ? otype : '')
+        // sgs-ui-m6c: auto-spawn the matching viewer block downstream
+        // alongside the upstream upload spawn above. The dedupe check inside
+        // addDownstreamViewer makes this safe on mount rehydration — no
+        // duplicate viewers added when a tab is re-opened.
+        if (otype === 'image' || otype === 'video') {
+          addDownstreamViewer(otype)
+        }
         if (otype === 'image' || otype === 'video' || otype === 'unknown') {
           return otype
         }
@@ -988,7 +1010,7 @@ function ComfyGenBlock({
       return ''
     }
     return ''
-  }, [setLoadNodes, setNodeMappings, addUpstreamBlocks, setKsamplers, setKsamplerOverrides, setTextOverrides, setTextValues, setResolutionNodes, setResolutionOverrides, setFrameCounts, setFrameOverrides, setRefVideo, setRefVideoOverrides, setOutputHint])
+  }, [setLoadNodes, setNodeMappings, addUpstreamBlocks, addDownstreamViewer, setKsamplers, setKsamplerOverrides, setTextOverrides, setTextValues, setResolutionNodes, setResolutionOverrides, setFrameCounts, setFrameOverrides, setRefVideo, setRefVideoOverrides, setOutputHint])
 
   // Re-parse on mount when workflow is restored from session state
   const didMountParse = useRef(false)
@@ -1974,21 +1996,10 @@ function ComfyGenBlock({
         </div>
       )}
 
-      {/* Detected input nodes */}
-      {loadNodes.length > 0 && (
-        <div className="space-y-1">
-          <Label className="text-xs">Detected Inputs</Label>
-          {loadNodes.map((node) => (
-            <div key={node.node_id} className="flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span>#{node.node_id}</span>
-              <span className="truncate">{node.class_type}</span>
-              <span className="ml-auto text-[10px] rounded bg-muted px-1.5 py-0.5">
-                {node.field}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* sgs-ui-m6c: Detected Inputs panel removed. Upstream upload blocks
+          (Upload Image / Video Loader) are auto-spawned via
+          addUpstreamBlocks() on workflow load; loadNodes still drives that
+          logic + nodeMappings, so it stays in state — just not rendered. */}
 
       {/* Resolution nodes */}
       {resolutionNodes.length > 0 && (
