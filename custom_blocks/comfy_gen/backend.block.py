@@ -384,6 +384,7 @@ def _detect_ksamplers(workflow: dict[str, Any]) -> list[dict[str, Any]]:
     Supports:
     - KSampler / KSamplerAdvanced (standard nodes with all params inline)
     - SamplerCustomAdvanced (modular: wires to KSamplerSelect, CFGGuider, RandomNoise, etc.)
+    - SamplerCustom (modular but with inline cfg + noise_seed; sampler/sigmas wired)
     """
     samplers = []
 
@@ -499,6 +500,70 @@ def _detect_ksamplers(workflow: dict[str, Any]) -> list[dict[str, Any]]:
             sigmas_id = entry.pop("_sigmas_node")
             override_map["steps"] = f"{sigmas_id}.steps"
             override_map["scheduler"] = f"{sigmas_id}.scheduler"
+        if override_map:
+            entry["override_map"] = override_map
+
+        samplers.append(entry)
+
+    # SamplerCustom nodes — inline cfg/noise_seed, wired sampler/sigmas
+    for node_id, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        if node.get("class_type") != "SamplerCustom":
+            continue
+        inputs = node.get("inputs", {})
+        meta_title = node.get("_meta", {}).get("title", "")
+        entry: dict[str, Any] = {
+            "node_id": node_id,
+            "class_type": "SamplerCustom",
+        }
+        if meta_title and meta_title != "SamplerCustom":
+            entry["label"] = meta_title
+
+        override_map: dict[str, str] = {}
+
+        # Inline cfg
+        cfg_val = _resolve_input(workflow, inputs.get("cfg"))
+        if isinstance(cfg_val, (int, float)):
+            entry["cfg"] = cfg_val
+            override_map["cfg"] = f"{node_id}.cfg"
+
+        # Inline noise_seed
+        seed_val = _resolve_input(workflow, inputs.get("noise_seed"))
+        if isinstance(seed_val, (int, float)):
+            entry["seed"] = int(seed_val)
+            override_map["seed"] = f"{node_id}.noise_seed"
+
+        # Trace sampler input → KSamplerSelect (if applicable); other sampler
+        # nodes (SamplerLCM, etc.) have no sampler_name and are skipped here
+        sampler_ref = inputs.get("sampler")
+        if isinstance(sampler_ref, list) and len(sampler_ref) >= 2:
+            sampler_node = workflow.get(str(sampler_ref[0]), {})
+            if sampler_node.get("class_type") == "KSamplerSelect":
+                sn = sampler_node.get("inputs", {}).get("sampler_name")
+                if isinstance(sn, str):
+                    entry["sampler_name"] = sn
+                    override_map["sampler_name"] = f"{sampler_ref[0]}.sampler_name"
+
+        # Trace sigmas input → scheduler node (BasicScheduler etc.)
+        sigmas_ref = inputs.get("sigmas")
+        if isinstance(sigmas_ref, list) and len(sigmas_ref) >= 2:
+            sigmas_node = workflow.get(str(sigmas_ref[0]), {})
+            sched_inputs = sigmas_node.get("inputs", {})
+            sigmas_id = str(sigmas_ref[0])
+            scheduler_val = sched_inputs.get("scheduler")
+            if isinstance(scheduler_val, str):
+                entry["scheduler"] = scheduler_val
+                override_map["scheduler"] = f"{sigmas_id}.scheduler"
+            steps_val = _resolve_input(workflow, sched_inputs.get("steps"))
+            if isinstance(steps_val, (int, float)):
+                entry["steps"] = int(steps_val)
+                override_map["steps"] = f"{sigmas_id}.steps"
+            denoise_val = _resolve_input(workflow, sched_inputs.get("denoise"))
+            if isinstance(denoise_val, (int, float)):
+                entry["denoise"] = round(float(denoise_val), 3)
+                override_map["denoise"] = f"{sigmas_id}.denoise"
+
         if override_map:
             entry["override_map"] = override_map
 
