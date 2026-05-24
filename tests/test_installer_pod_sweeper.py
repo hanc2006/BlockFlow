@@ -115,6 +115,20 @@ def test_decide_rule_c_active_install_over_stuck_threshold_deletes():
     assert reason == "install_stuck"
 
 
+def test_parse_created_at_handles_runpod_go_time_string_format():
+    """RunPod actually returns Go's `time.String()` format on /v1/pods:
+    '2026-05-24 09:18:12.662 +0000 UTC' (caught in c7n live test). Earlier
+    we assumed RFC3339; both must work."""
+    parsed = installer_pod_sweeper._parse_created_at("2026-05-24 09:18:12.662 +0000 UTC")
+    assert parsed is not None
+    assert parsed.year == 2026 and parsed.month == 5 and parsed.day == 24
+    assert parsed.tzinfo is not None
+    # No-fraction variant
+    assert installer_pod_sweeper._parse_created_at("2026-05-24 09:18:12 +0000 UTC") is not None
+    # Still handles the RFC3339 format defensively
+    assert installer_pod_sweeper._parse_created_at("2026-05-24T09:18:12Z") is not None
+
+
 def test_decide_unparseable_createdat_skips_defensively():
     """Bad/missing createdAt → don't DELETE — better to leak a pod than to
     nuke something we can't reason about."""
@@ -219,6 +233,26 @@ def test_sweep_once_returns_error_when_list_pods_throws(db_isolated, mocker):
                         side_effect=runpod_api.RunPodAPIError("timeout"))
     report = installer_pod_sweeper.sweep_once()
     assert any(e.get("scope") == "list_pods" for e in report.errors)
+
+
+def test_sweep_once_honors_runtime_threshold_overrides(db_isolated, mocker, monkeypatch):
+    """Regression for c7n live test: _decide's defaults bind to ORPHAN_MIN
+    at function-definition time, so sweep_once must pass the *current*
+    module-level value rather than relying on the default."""
+    settings_store.set_credential("runpod_api_key", "rpa_test")
+    now = datetime.now(timezone.utc)
+    fresh = (now - timedelta(seconds=10)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    mocker.patch.object(runpod_api, "list_pods", return_value=[
+        {"id": "pod_fresh", "name": "comfygen-installer-x", "createdAt": fresh},
+    ])
+    mocker.patch.object(runpod_api, "delete_pod", return_value=True)
+    # Default ORPHAN_MIN=5 → 10-second-old pod should NOT be DELETEd.
+    r = installer_pod_sweeper.sweep_once(now=now)
+    assert r.deleted == []
+    # Patch the module global to 0 → next sweep should DELETE.
+    monkeypatch.setattr(installer_pod_sweeper, "ORPHAN_MIN", 0)
+    r = installer_pod_sweeper.sweep_once(now=now)
+    assert {d["pod_id"] for d in r.deleted} == {"pod_fresh"}
 
 
 def test_sweep_once_flips_install_state_on_stuck_delete(db_isolated, mocker):

@@ -50,15 +50,30 @@ class SweepReport:
 
 
 def _parse_created_at(raw: str | None) -> datetime | None:
-    """RunPod returns RFC3339 timestamps like '2026-05-24T07:43:16Z'.
-    Returns None on missing / unparseable input so the sweeper treats the
-    pod as 'unknown age' and falls through to skip (defensive: never
-    DELETE on bad input)."""
+    """RunPod returns pod timestamps in Go's default `time.String()` format
+    — e.g. '2026-05-24 09:18:12.662 +0000 UTC'. Older accounts / different
+    endpoints sometimes return RFC3339 ('2026-05-24T07:43:16Z') so we try
+    both. Returns None on missing / unparseable input so the sweeper
+    treats the pod as 'unknown age' and skips (defensive: never DELETE on
+    bad input)."""
     if not raw:
         return None
+    s = raw.strip()
+    # Format 1: RFC3339, with optional trailing Z.
     try:
-        # Python <3.11 doesn't accept trailing 'Z'; canonicalize to +00:00.
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    # Format 2: Go's time.String() — '2026-05-24 09:18:12.662 +0000 UTC'.
+    # Drop the trailing ' UTC' marker (the offset already carries the tz).
+    if s.endswith(" UTC"):
+        s = s[:-4]
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S.%f %z")
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S %z")
     except ValueError:
         return None
 
@@ -139,11 +154,16 @@ def sweep_once(*, now: datetime | None = None) -> SweepReport:
         completed_row = settings_store.get_installed_preset_by_pod_id(pod_id)
         is_active = (pod_id == active_pod_id)
 
+        # Re-read the module-level thresholds at call time so tests can
+        # monkey-patch them; binding to _decide's defaults would freeze the
+        # values at function-definition time.
         decision, reason = _decide(
             pod, now=now,
             completed_row=completed_row,
             is_active=is_active,
             active_state=active_state if is_active else None,
+            orphan_min=ORPHAN_MIN,
+            stuck_min=STUCK_MIN,
         )
 
         if decision == "delete":
