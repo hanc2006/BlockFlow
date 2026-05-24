@@ -66,7 +66,13 @@ _read_cache_from_disk()
 
 @router.get("/cache")
 def get_cache() -> JSONResponse:
-    """Return cached samplers, schedulers, and loras."""
+    """Return cached samplers, schedulers, and loras.
+
+    Re-reads the disk cache on every call so out-of-band writes (e.g. the
+    LoRA management page's delete/download in sgs-ui-eqc) propagate to the
+    block's dropdown without requiring a full refresh.
+    """
+    _read_cache_from_disk()
     return JSONResponse({
         "ok": True,
         "samplers": _cache["samplers"],

@@ -5,8 +5,9 @@ import { usePathname } from 'next/navigation'
 import { Package as PackageIcon } from 'lucide-react'
 
 /**
- * Box-with-down-arrow icon for the global NavBar that links to /presets
- * (sgs-ui-wisp-las.3). Mirrors the SettingsNavIcon pattern.
+ * "Presets & Models" nav entry — shows both icon and label so new users
+ * can find the model-bundle installer without hovering for the tooltip
+ * (sgs-ui-eqc.3).
  */
 export function PresetsNavIcon() {
   const pathname = usePathname()
@@ -14,16 +15,16 @@ export function PresetsNavIcon() {
   return (
     <Link
       href="/presets"
-      title="Presets"
+      title="Install model + workflow bundles"
       aria-current={active ? 'page' : undefined}
-      className={`flex items-center px-2.5 py-1.5 rounded-full transition-all ${
+      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs transition-all ${
         active
           ? 'bg-primary text-primary-foreground shadow-sm'
           : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
       }`}
     >
-      <PackageIcon className="size-4" />
-      <span className="sr-only">Presets</span>
+      <PackageIcon className="w-3.5 h-3.5" />
+      <span>Presets &amp; Models</span>
     </Link>
   )
 }

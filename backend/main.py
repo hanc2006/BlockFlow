@@ -12,6 +12,8 @@ from backend import (
     config,
     db,
     installer_pod_sweeper,
+    lora_metadata,
+    lora_routes,
     preset_routes,
     routes,
     settings_routes,
@@ -35,11 +37,13 @@ app.include_router(routes.router)
 app.include_router(settings_routes.router)
 app.include_router(wizard_routes.router)
 app.include_router(preset_routes.router)
+app.include_router(lora_routes.router)
 
 # Ensure the settings tables exist before any block sidecar (which may read
 # Settings on import in later beads). Safe to call repeatedly — it's a no-op
 # once the tables are present.
 settings_store.init_db()
+lora_metadata.init_db()
 
 
 def _prune_run_history_on_startup() -> None:

@@ -18,6 +18,7 @@ import {
 import { usePipelineTabs } from '@/lib/pipeline/tabs-context'
 import { deleteFlow, renameFlow } from '@/lib/api'
 import { SettingsNavIcon } from '@/components/settings/settings-nav-icon'
+import { LorasNavIcon } from '@/components/loras/loras-nav-icon'
 import { PresetsNavIcon } from '@/components/presets/presets-nav-icon'
 
 const NAV_ITEMS = [
@@ -210,6 +211,8 @@ export function NavBar() {
         <div className="w-px h-4 bg-border/50" />
 
         <PresetsNavIcon />
+
+        <LorasNavIcon />
 
         <SettingsNavIcon />
 
