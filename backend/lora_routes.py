@@ -13,8 +13,10 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -117,11 +119,14 @@ def _fetch_loras_from_comfygen(endpoint_id: str) -> list[str]:
 
     Cold-path: takes 50-90s on a cold CPU pod. Only called from explicit
     /sync, never from GET. Updates the shared cache file as a side effect.
+
+    `comfy-gen list` always emits JSON on stdout; the response shape is
+    {ok, model_type, files: [{filename, path, size_mb}], ...}.
     """
     if not shutil.which("comfy-gen"):
         raise HTTPException(status_code=500, detail="comfy-gen CLI not found on PATH")
     proc = subprocess.run(
-        ["comfy-gen", "list", "loras", "--endpoint-id", endpoint_id, "--json"],
+        ["comfy-gen", "list", "loras", "--endpoint-id", endpoint_id],
         capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC,
     )
     if proc.returncode != 0:
@@ -133,30 +138,39 @@ def _fetch_loras_from_comfygen(endpoint_id: str) -> list[str]:
         data = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=502, detail=f"comfy-gen returned invalid JSON: {exc}") from exc
-    items = data.get("loras") if isinstance(data, dict) else data
-    if not isinstance(items, list):
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, list):
         return []
     out: list[str] = []
-    for item in items:
-        if isinstance(item, str):
-            out.append(item)
-        elif isinstance(item, dict) and item.get("filename"):
+    for item in files:
+        if isinstance(item, dict) and item.get("filename"):
             out.append(str(item["filename"]))
+        elif isinstance(item, str):
+            out.append(item)
     _write_cached_loras(out, fetched_at=time.time())
     return out
 
 
 def _delete_subprocess(filenames: list[str], endpoint_id: str) -> list[dict[str, Any]]:
-    """Invoke `comfy-gen delete --batch` and return per-file results.
+    """Invoke `comfy-gen delete --batch <file>` and return per-file results.
 
-    Returns a list of {path, deleted, error?} dicts.
+    The CLI reads the batch payload from a JSON file (not stdin), so we
+    write a tempfile and pass its path. Output is always JSON on stdout.
     """
     paths = [f"{LORA_DEST_DIR}/{f}" for f in filenames]
-    payload = json.dumps(paths)
-    proc = subprocess.run(
-        ["comfy-gen", "delete", "--batch", "-", "--endpoint-id", endpoint_id, "--json"],
-        input=payload, capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC,
-    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tf:
+        json.dump(paths, tf)
+        batch_file = tf.name
+    try:
+        proc = subprocess.run(
+            ["comfy-gen", "delete", "--batch", batch_file, "--endpoint-id", endpoint_id],
+            capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC,
+        )
+    finally:
+        try:
+            Path(batch_file).unlink(missing_ok=True)
+        except OSError:
+            pass
     if proc.returncode != 0 and not proc.stdout.strip():
         raise HTTPException(
             status_code=502,
@@ -171,12 +185,24 @@ def _delete_subprocess(filenames: list[str], endpoint_id: str) -> list[dict[str,
 
 
 def _download_subprocess(entries: list[dict[str, Any]], endpoint_id: str) -> dict[str, Any]:
-    """Invoke `comfy-gen download --batch` and return parsed result."""
-    payload = json.dumps(entries)
-    proc = subprocess.run(
-        ["comfy-gen", "download", "--batch", "-", "--endpoint-id", endpoint_id, "--json"],
-        input=payload, capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC * 8,
-    )
+    """Invoke `comfy-gen download --batch <file>` and return the parsed result.
+
+    The CLI reads the batch payload from a JSON file (not stdin). Output is
+    always JSON on stdout: {ok, files: [...], job_id, elapsed_seconds}.
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tf:
+        json.dump(entries, tf)
+        batch_file = tf.name
+    try:
+        proc = subprocess.run(
+            ["comfy-gen", "download", "--batch", batch_file, "--endpoint-id", endpoint_id],
+            capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC * 8,
+        )
+    finally:
+        try:
+            Path(batch_file).unlink(missing_ok=True)
+        except OSError:
+            pass
     if proc.returncode != 0:
         raise HTTPException(
             status_code=502,
