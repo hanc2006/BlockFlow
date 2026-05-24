@@ -842,8 +842,12 @@ function ComfyGenBlock({
     return location?.index ?? pipeline.blocks.length
   }, [pipeline.blocks, blockId])
 
-  // Add required upstream blocks for detected load nodes
-  const addUpstreamBlocks = useCallback((nodes: LoadNode[]) => {
+  // Add required upstream blocks for detected load nodes. Returns the
+  // number of blocks inserted — the caller needs this to compute the right
+  // index for any downstream block added in the same render pass, since
+  // React batches updatePipeline so `pipeline.blocks` (closure) is stale
+  // until the next render.
+  const addUpstreamBlocks = useCallback((nodes: LoadNode[]): number => {
     const myIndex = getMyIndex()
     const upstreamTypes = new Set(
       pipeline.blocks.slice(0, myIndex).map((b) => b.type)
@@ -861,14 +865,24 @@ function ComfyGenBlock({
       addBlock('videoLoader', myIndex + insertOffset)
       insertOffset++
     }
+    return insertOffset
   }, [getMyIndex, pipeline.blocks, addBlock])
 
   // sgs-ui-m6c: mirror of addUpstreamBlocks, downstream side. When a workflow
   // emits an image / video, drop the matching viewer immediately after this
   // block unless one already exists downstream — saves the user a manual
   // "add Video Viewer" step every time they swap presets.
-  const addDownstreamViewer = useCallback((outputKind: 'image' | 'video') => {
-    const myIndex = getMyIndex()
+  //
+  // `upstreamInsertCount` adjusts for blocks just inserted before this
+  // ComfyGen in the same render pass. getMyIndex() reads pipeline.blocks
+  // from a stale closure (updatePipeline batches), so without this offset
+  // we'd insert the viewer at the OLD myIndex+1 — i.e. between the upstream
+  // upload and the ComfyGen, not after the ComfyGen.
+  const addDownstreamViewer = useCallback((
+    outputKind: 'image' | 'video',
+    upstreamInsertCount: number = 0,
+  ) => {
+    const myIndex = getMyIndex() + upstreamInsertCount
     const viewerType = outputKind === 'video' ? 'videoViewer' : 'imageViewer'
     const downstreamTypes = new Set(
       pipeline.blocks.slice(myIndex + 1).map((b) => b.type)
@@ -902,8 +916,9 @@ function ComfyGenBlock({
           portKind: n.field === 'video' ? 'video' as const : 'image' as const,
         }))
         setNodeMappings(mappings)
+        let upstreamInsertCount = 0
         if (nodes.length > 0) {
-          addUpstreamBlocks(nodes)
+          upstreamInsertCount = addUpstreamBlocks(nodes)
         }
 
         const detectedKsamplers = (data.ksamplers || []) as KSamplerInfo[]
@@ -977,11 +992,13 @@ function ComfyGenBlock({
         setOutputType(otype)
         setOutputHint?.(otype !== 'unknown' ? otype : '')
         // sgs-ui-m6c: auto-spawn the matching viewer block downstream
-        // alongside the upstream upload spawn above. The dedupe check inside
-        // addDownstreamViewer makes this safe on mount rehydration — no
-        // duplicate viewers added when a tab is re-opened.
+        // alongside the upstream upload spawn above. Passes the upstream
+        // insert count so the viewer lands AFTER this ComfyGen even when
+        // upload blocks were just inserted before it in the same pass
+        // (pipeline.blocks closure is stale until the next render). The
+        // dedupe check makes mount rehydration safe — no duplicate viewers.
         if (otype === 'image' || otype === 'video') {
-          addDownstreamViewer(otype)
+          addDownstreamViewer(otype, upstreamInsertCount)
         }
         if (otype === 'image' || otype === 'video' || otype === 'unknown') {
           return otype
