@@ -1831,7 +1831,7 @@ function ComfyGenBlock({
             return (
             <div key={ks.node_id} className="space-y-1">
               {ksamplers.length > 1 && (
-                <span className="text-[10px] text-muted-foreground">{ks.label || `#{ks.node_id} ${ks.class_type}`}</span>
+                <span className="text-[10px] text-muted-foreground">{ks.label || `#${ks.node_id} ${ks.class_type}`}</span>
               )}
               {numericFields.length > 0 && (
               <div className={`grid gap-2`} style={{ gridTemplateColumns: `repeat(${Math.min(numericFields.length, 3)}, 1fr)` }}>
