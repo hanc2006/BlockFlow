@@ -25,7 +25,6 @@ const fakeIdb = {
               return {}
             },
           }),
-          oncomplete: null,
           onerror: null,
           set oncomplete(fn: (() => void) | null) { if (fn) queueMicrotask(fn) },
         }),
