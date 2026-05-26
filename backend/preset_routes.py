@@ -46,7 +46,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from backend import config, runpod_api, settings_store
+from backend import config, preset_resolver, runpod_api, settings_store
 
 router = APIRouter()
 
@@ -576,28 +576,6 @@ def _process_install_event(evt: dict) -> dict | None:
     return None
 
 
-def _strip_internal_fields(entry: dict) -> dict:
-    """Drop underscore-prefixed fields before writing the comfy-gen download
-    spec. The CLI doesn't tolerate unknown fields cleanly."""
-    return {k: v for k, v in entry.items() if not k.startswith("_")}
-
-
-def _normalize_batch_entry(entry: dict) -> dict:
-    """src-b6b: comfy-gen's `download` API contract treats `dest` as a
-    *subfolder* (directory) under MODELS_BASE, not a full file path.
-    Preset entries store the full `<subfolder>/<filename>` relative path
-    in `dest`, which the worker then tries to mkdir — failing with
-    FileExistsError when a regular file already lives there.
-
-    Rewrite to `destination_path` (the handler splits this correctly
-    via _split_destination_path)."""
-    out = {k: v for k, v in entry.items() if k != "dest"}
-    dest = entry.get("dest") or ""
-    if dest:
-        out["destination_path"] = (
-            dest if "/" in dest else f"checkpoints/{dest}"
-        )
-    return out
 
 
 def _run_gpu_install_subprocess(
@@ -627,11 +605,12 @@ def _run_gpu_install_subprocess(
         f"\n\n=== {_now_iso()} preset={preset_id} START (GPU fallback) ===\n"
     )
 
-    # Build the download batch spec from preset.models.
-    batch_spec = [
-        _normalize_batch_entry(_strip_internal_fields(m))
-        for m in preset_models
-    ]
+    # src-abj: route through the canonical translator (vendored from
+    # comfy-gen's preset_resolver) — handles source aliasing
+    # (huggingface→url), civitai version_id extraction, and dest →
+    # destination_path conversion. Hand-rolling this payload has produced
+    # three separate prod failures.
+    batch_spec = preset_resolver.preset_to_download_batch(preset_models)
     files_total = len(batch_spec)
     _install_state["files_total"] = files_total
 
