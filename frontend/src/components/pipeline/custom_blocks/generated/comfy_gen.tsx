@@ -64,6 +64,7 @@ import {
   filterVisibleSettings,
   mergeSettingsOverrides,
 } from '@/lib/workflow-settings'
+import { dropHidden, hiddenSetFrom } from '@/lib/hide-nodes'
 
 const ENDPOINT_KEY = 'comfygen_endpoint_id'
 const RUN_ENDPOINT = '/api/blocks/comfy_gen/run'
@@ -601,6 +602,9 @@ function ComfyGenBlock({
   // same preset shows fresh defaults while remembering prior edits on
   // workflow switch-back.
   const [workflowSettings, setWorkflowSettings] = useSessionState<WorkflowSetting[]>(`block_${blockId}_workflow_settings`, [])
+  // sgs-ui-2hf: preset's hidden_nodes — applied by parseWorkflow and the
+  // mount-time re-parse to drop suppressed nodes from all 7 detection arrays.
+  const [hiddenNodes, setHiddenNodes] = useSessionState<string[]>(`block_${blockId}_hidden_nodes`, [])
   const [workflowSettingsOverridesByScope, setWorkflowSettingsOverridesByScope] = useSessionState<Record<string, Record<string, string>>>(`block_${blockId}_workflow_settings_overrides`, {})
   const [availableLoras, setAvailableLoras] = useState<string[]>([])
   const [availableSamplers, setAvailableSamplers] = useState<string[]>([])
@@ -901,7 +905,11 @@ function ComfyGenBlock({
   }, [getMyIndex, pipeline.blocks, addBlock])
 
   // Parse workflow to detect LoadImage/LoadVideo nodes, KSamplers, empty prompts
-  const parseWorkflow = useCallback(async (json: string): Promise<'image' | 'video' | 'unknown' | ''> => {
+  // sgs-ui-2hf: optional `opts.hiddenNodes` from the active preset's
+  // workflows[].hidden_nodes — detection arrays for those node IDs are
+  // dropped at the source so downstream consumers (panels, axes,
+  // seed-randomization, /run override collection) never see them.
+  const parseWorkflow = useCallback(async (json: string, opts?: { hiddenNodes?: string[] }): Promise<'image' | 'video' | 'unknown' | ''> => {
     try {
       const workflow = JSON.parse(json)
       const res = await fetch(PARSE_ENDPOINT, {
@@ -916,7 +924,8 @@ function ComfyGenBlock({
       }
       setWorkflowError('')
       if (data.ok) {
-        const nodes = (data.load_nodes || []) as LoadNode[]
+        const hidden = hiddenSetFrom(opts?.hiddenNodes)
+        const nodes = dropHidden((data.load_nodes || []) as LoadNode[], hidden)
         setLoadNodes(nodes)
         const mappings: NodeMapping[] = nodes.map((n: LoadNode) => ({
           node_id: n.node_id,
@@ -929,7 +938,7 @@ function ComfyGenBlock({
           upstreamInsertCount = addUpstreamBlocks(nodes)
         }
 
-        const detectedKsamplers = (data.ksamplers || []) as KSamplerInfo[]
+        const detectedKsamplers = dropHidden((data.ksamplers || []) as KSamplerInfo[], hidden)
         setKsamplers(detectedKsamplers)
         const initOverrides: Record<string, KSamplerOverride> = {}
         for (const ks of detectedKsamplers) {
@@ -943,7 +952,7 @@ function ComfyGenBlock({
         }
         setKsamplerOverrides(initOverrides)
 
-        const detectedTextOverrides = (data.text_overrides || []) as TextOverrideInfo[]
+        const detectedTextOverrides = dropHidden((data.text_overrides || []) as TextOverrideInfo[], hidden)
         setTextOverrides(detectedTextOverrides)
         const initTextValues: Record<string, string> = {}
         for (const to of detectedTextOverrides) {
@@ -951,7 +960,7 @@ function ComfyGenBlock({
         }
         setTextValues(initTextValues)
 
-        const detectedResNodes = (data.resolution_nodes || []) as ResolutionNodeInfo[]
+        const detectedResNodes = dropHidden((data.resolution_nodes || []) as ResolutionNodeInfo[], hidden)
         setResolutionNodes(detectedResNodes)
         const initResOverrides: Record<string, { width: string; height: string }> = {}
         for (const rn of detectedResNodes) {
@@ -962,7 +971,7 @@ function ComfyGenBlock({
         }
         setResolutionOverrides(initResOverrides)
 
-        const detectedFrames = (data.frame_counts || []) as FrameCountInfo[]
+        const detectedFrames = dropHidden((data.frame_counts || []) as FrameCountInfo[], hidden)
         setFrameCounts(detectedFrames)
         const initFrameOverrides: Record<string, string> = {}
         for (const fc of detectedFrames) {
@@ -970,7 +979,7 @@ function ComfyGenBlock({
         }
         setFrameOverrides(initFrameOverrides)
 
-        const detectedRefVideo = (data.ref_video || []) as RefVideoInfo[]
+        const detectedRefVideo = dropHidden((data.ref_video || []) as RefVideoInfo[], hidden)
         setRefVideo(detectedRefVideo)
         const initRefOverrides: Record<string, string> = {}
         for (const rv of detectedRefVideo) {
@@ -980,7 +989,7 @@ function ComfyGenBlock({
         }
         setRefVideoOverrides(initRefOverrides)
 
-        const detectedLoras = (data.lora_nodes || []) as LoraNodeInfo[]
+        const detectedLoras = dropHidden((data.lora_nodes || []) as LoraNodeInfo[], hidden)
         setLoraNodes(detectedLoras)
         const initLoraOverrides: Record<string, LoraOverride> = {}
         for (const ln of detectedLoras) {
@@ -1052,10 +1061,10 @@ function ComfyGenBlock({
         })
         const data = await res.json()
         if (!data.ok) return
+        const hidden = hiddenSetFrom(hiddenNodes)
+        setLoadNodes(dropHidden((data.load_nodes || []) as LoadNode[], hidden))
 
-        setLoadNodes((data.load_nodes || []) as LoadNode[])
-
-        const detectedKsamplers = (data.ksamplers || []) as KSamplerInfo[]
+        const detectedKsamplers = dropHidden((data.ksamplers || []) as KSamplerInfo[], hidden)
         setKsamplers(detectedKsamplers)
         // Merge new defaults into existing overrides (preserves user edits, fills missing fields)
         setKsamplerOverrides((prev) => {
@@ -1072,10 +1081,10 @@ function ComfyGenBlock({
           return merged
         })
 
-        const detectedTextOverrides = (data.text_overrides || []) as TextOverrideInfo[]
+        const detectedTextOverrides = dropHidden((data.text_overrides || []) as TextOverrideInfo[], hidden)
         setTextOverrides(detectedTextOverrides)
 
-        const detectedResNodes = (data.resolution_nodes || []) as ResolutionNodeInfo[]
+        const detectedResNodes = dropHidden((data.resolution_nodes || []) as ResolutionNodeInfo[], hidden)
         setResolutionNodes(detectedResNodes)
         // Merge resolution overrides
         setResolutionOverrides((prev) => {
@@ -1089,7 +1098,7 @@ function ComfyGenBlock({
           return merged
         })
 
-        const detectedFrames = (data.frame_counts || []) as FrameCountInfo[]
+        const detectedFrames = dropHidden((data.frame_counts || []) as FrameCountInfo[], hidden)
         setFrameCounts(detectedFrames)
         setFrameOverrides((prev) => {
           const merged: Record<string, string> = { ...prev }
@@ -1099,7 +1108,7 @@ function ComfyGenBlock({
           return merged
         })
 
-        const detectedRefVideo = (data.ref_video || []) as RefVideoInfo[]
+        const detectedRefVideo = dropHidden((data.ref_video || []) as RefVideoInfo[], hidden)
         setRefVideo(detectedRefVideo)
         setRefVideoOverrides((prev) => {
           const merged: Record<string, string> = { ...prev }
@@ -1112,7 +1121,7 @@ function ComfyGenBlock({
           return merged
         })
 
-        const detectedLoras2 = (data.lora_nodes || []) as LoraNodeInfo[]
+        const detectedLoras2 = dropHidden((data.lora_nodes || []) as LoraNodeInfo[], hidden)
         setLoraNodes(detectedLoras2)
         setLoraOverrides((prev) => {
           const merged: Record<string, LoraOverride> = { ...prev }
@@ -1151,6 +1160,7 @@ function ComfyGenBlock({
     // sgs-ui-gb4: user-loaded JSON has no preset behind it → hide the
     // Workflow Settings panel (its declarations come from a preset only).
     setWorkflowSettings([])
+    setHiddenNodes([])
     const detectedType = await parseWorkflow(text)
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
@@ -1198,7 +1208,8 @@ function ComfyGenBlock({
       // covered by an auto-detected panel, so an over-eager preset author
       // doesn't end up with two UIs for the same field.
       setWorkflowSettings(Array.isArray(chosen.settings) ? chosen.settings : [])
-      const detectedType = await parseWorkflow(json)
+      setHiddenNodes(Array.isArray(chosen.hidden_nodes) ? chosen.hidden_nodes : [])
+      const detectedType = await parseWorkflow(json, { hiddenNodes: chosen.hidden_nodes })
       if (detectedType === 'image' || detectedType === 'video') {
         setOutput(detectedType, makePendingOutput(detectedType))
       }
@@ -1232,6 +1243,7 @@ function ComfyGenBlock({
     setPresetRecommendations({ global: [], workflow: [] })
     // sgs-ui-gb4: same — no preset, no Workflow Settings panel.
     setWorkflowSettings([])
+    setHiddenNodes([])
     const detectedType = await parseWorkflow(json)
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))

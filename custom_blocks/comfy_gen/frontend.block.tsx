@@ -600,6 +600,9 @@ function ComfyGenBlock({
   // same preset shows fresh defaults while remembering prior edits on
   // workflow switch-back.
   const [workflowSettings, setWorkflowSettings] = useSessionState<WorkflowSetting[]>(`block_${blockId}_workflow_settings`, [])
+  // sgs-ui-2hf: preset's hidden_nodes — applied by parseWorkflow and the
+  // mount-time re-parse to drop suppressed nodes from all 7 detection arrays.
+  const [hiddenNodes, setHiddenNodes] = useSessionState<string[]>(`block_${blockId}_hidden_nodes`, [])
   const [workflowSettingsOverridesByScope, setWorkflowSettingsOverridesByScope] = useSessionState<Record<string, Record<string, string>>>(`block_${blockId}_workflow_settings_overrides`, {})
   const [availableLoras, setAvailableLoras] = useState<string[]>([])
   const [availableSamplers, setAvailableSamplers] = useState<string[]>([])
@@ -1056,8 +1059,8 @@ function ComfyGenBlock({
         })
         const data = await res.json()
         if (!data.ok) return
-
-        setLoadNodes((data.load_nodes || []) as LoadNode[])
+        const hidden = hiddenSetFrom(hiddenNodes)
+        setLoadNodes(dropHidden((data.load_nodes || []) as LoadNode[], hidden))
 
         const detectedKsamplers = dropHidden((data.ksamplers || []) as KSamplerInfo[], hidden)
         setKsamplers(detectedKsamplers)
@@ -1116,7 +1119,7 @@ function ComfyGenBlock({
           return merged
         })
 
-        const detectedLoras2 = (data.lora_nodes || []) as LoraNodeInfo[]
+        const detectedLoras2 = dropHidden((data.lora_nodes || []) as LoraNodeInfo[], hidden)
         setLoraNodes(detectedLoras2)
         setLoraOverrides((prev) => {
           const merged: Record<string, LoraOverride> = { ...prev }
@@ -1155,6 +1158,7 @@ function ComfyGenBlock({
     // sgs-ui-gb4: user-loaded JSON has no preset behind it → hide the
     // Workflow Settings panel (its declarations come from a preset only).
     setWorkflowSettings([])
+    setHiddenNodes([])
     const detectedType = await parseWorkflow(text)
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
@@ -1202,6 +1206,7 @@ function ComfyGenBlock({
       // covered by an auto-detected panel, so an over-eager preset author
       // doesn't end up with two UIs for the same field.
       setWorkflowSettings(Array.isArray(chosen.settings) ? chosen.settings : [])
+      setHiddenNodes(Array.isArray(chosen.hidden_nodes) ? chosen.hidden_nodes : [])
       const detectedType = await parseWorkflow(json, { hiddenNodes: chosen.hidden_nodes })
       if (detectedType === 'image' || detectedType === 'video') {
         setOutput(detectedType, makePendingOutput(detectedType))
@@ -1236,6 +1241,7 @@ function ComfyGenBlock({
     setPresetRecommendations({ global: [], workflow: [] })
     // sgs-ui-gb4: same — no preset, no Workflow Settings panel.
     setWorkflowSettings([])
+    setHiddenNodes([])
     const detectedType = await parseWorkflow(json)
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
