@@ -138,9 +138,15 @@ def _read_cached_loras() -> tuple[list[str], float | None]:
         data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return ([], None)
-    loras = data.get("loras") or []
     fetched_at = data.get("fetched_at")
-    names = [s for s in loras if isinstance(s, str)]
+    # Pre-v2 caches stored flat filename strings under "loras" — reject
+    # those so the next sync repopulates with rich {filename, path,
+    # size_mb} objects.
+    if data.get("version") != 2:
+        return ([], float(fetched_at) if fetched_at else None)
+    loras = data.get("loras") or []
+    names = [item["filename"] for item in loras
+             if isinstance(item, dict) and "filename" in item]
     return (names, float(fetched_at) if fetched_at else None)
 
 
@@ -149,6 +155,12 @@ def _write_cached_loras(filenames: list[str], fetched_at: float | None = None) -
 
     Called after a successful download/delete so the next GET shows fresh
     state without paying the cold-pod cost of a real `comfy-gen list loras`.
+
+    Cache schema v2 stores objects {filename, path, size_mb} rather than
+    flat strings. Since this writer only knows filenames, rich metadata
+    for surviving files is preserved by reading the existing cache; new
+    filenames get stub objects (filename only) until the next full sync
+    repopulates path + size_mb.
     """
     path = config.COMFY_GEN_INFO_CACHE_PATH
     with _cache_lock:
@@ -158,7 +170,21 @@ def _write_cached_loras(filenames: list[str], fetched_at: float | None = None) -
                 data = json.loads(path.read_text())
             except (json.JSONDecodeError, OSError):
                 data = {}
-        data["loras"] = sorted(set(filenames))
+
+        # Index any existing rich objects so we can preserve them across
+        # filename-only updates.
+        prior = data.get("loras") if data.get("version") == 2 else []
+        prior_by_name: dict[str, dict[str, Any]] = {}
+        if isinstance(prior, list):
+            for item in prior:
+                if isinstance(item, dict) and "filename" in item:
+                    prior_by_name[item["filename"]] = item
+
+        merged = [prior_by_name.get(name, {"filename": name})
+                  for name in sorted(set(filenames))]
+
+        data["version"] = 2
+        data["loras"] = merged
         if fetched_at is not None:
             data["fetched_at"] = fetched_at
         data.setdefault("samplers", [])

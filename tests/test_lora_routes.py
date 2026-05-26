@@ -40,14 +40,22 @@ def client(tmp_path, monkeypatch):
 
 
 def _seed_cache(tmp_path, filenames, fetched_at=None):
-    """Write the shared comfy_gen info cache file with the given LoRA list."""
+    """Write the shared comfy_gen info cache file (schema v2) with the
+    given LoRA filenames as stub objects."""
     import time as _time
     path = tmp_path / "comfy_gen_info_cache.json"
     path.write_text(json.dumps({
+        "version": 2,
         "samplers": [], "schedulers": [],
-        "loras": list(filenames),
+        "loras": [{"filename": fn} for fn in filenames],
         "fetched_at": fetched_at if fetched_at is not None else _time.time(),
     }))
+
+
+def _cached_filenames(tmp_path) -> list[str]:
+    """Read the v2 cache and project to filename strings."""
+    data = json.loads((tmp_path / "comfy_gen_info_cache.json").read_text())
+    return [item["filename"] for item in data["loras"]]
 
 
 def _configure_endpoint() -> None:
@@ -191,7 +199,7 @@ def test_delete_removes_filenames_from_shared_cache(client, monkeypatch, tmp_pat
 
     client.post("/api/loras/delete", json={"filenames": ["drop.safetensors"]})
 
-    cached = json.loads((tmp_path / "comfy_gen_info_cache.json").read_text())["loras"]
+    cached = _cached_filenames(tmp_path)
     assert "drop.safetensors" not in cached
     assert "keep.safetensors" in cached
 
@@ -209,7 +217,7 @@ def test_delete_failed_rows_stay_in_cache(client, monkeypatch, tmp_path) -> None
 
     client.post("/api/loras/delete", json={"filenames": ["a.safetensors", "b.safetensors"]})
 
-    cached = json.loads((tmp_path / "comfy_gen_info_cache.json").read_text())["loras"]
+    cached = _cached_filenames(tmp_path)
     assert "a.safetensors" not in cached
     assert "b.safetensors" in cached
 
@@ -332,7 +340,7 @@ def test_download_appends_filename_to_shared_cache(client, monkeypatch, tmp_path
     client.post("/api/loras/download",
                 json={"source": "url", "url": "https://example.com/new.safetensors"})
 
-    cached = json.loads((tmp_path / "comfy_gen_info_cache.json").read_text())["loras"]
+    cached = _cached_filenames(tmp_path)
     assert "new.safetensors" in cached
     assert "existing.safetensors" in cached
 

@@ -26,11 +26,24 @@ router = APIRouter()
 # comfy-gen cache (samplers, schedulers, loras)
 # ---------------------------------------------------------------------------
 
-_cache: dict[str, Any] = {"samplers": [], "schedulers": [], "loras": [], "fetched_at": 0}
+_CACHE_SCHEMA_VERSION = 2
+
+_cache: dict[str, Any] = {
+    "samplers": [], "schedulers": [],
+    "loras": [],           # filenames only — legacy projection for existing consumers
+    "lora_details": [],    # full {filename, path, size_mb} objects (v2)
+    "fetched_at": 0,
+}
 
 
 def _read_cache_from_disk() -> None:
-    """Load cached data from disk into memory (no CLI calls)."""
+    """Load cached data from disk into memory (no CLI calls).
+
+    Pre-v2 caches stored LoRAs as a flat list of filename strings, losing
+    `path` and `size_mb`. Those caches are rejected for the loras section
+    so the next `comfy-gen info` refresh repopulates with rich objects.
+    Samplers/schedulers are version-agnostic and load regardless.
+    """
     cache_path = config.COMFY_GEN_INFO_CACHE_PATH
     if not cache_path.exists():
         return
@@ -40,8 +53,11 @@ def _read_cache_from_disk() -> None:
             _cache["samplers"] = data["samplers"]
         if data.get("schedulers"):
             _cache["schedulers"] = data["schedulers"]
-        if data.get("loras"):
-            _cache["loras"] = data["loras"]
+        if data.get("version") == _CACHE_SCHEMA_VERSION:
+            details = [item for item in (data.get("loras") or [])
+                       if isinstance(item, dict) and "filename" in item]
+            _cache["lora_details"] = details
+            _cache["loras"] = [d["filename"] for d in details]
         if data.get("fetched_at"):
             _cache["fetched_at"] = data["fetched_at"]
     except Exception:
@@ -51,9 +67,10 @@ def _read_cache_from_disk() -> None:
 def _save_cache_to_disk() -> None:
     config.COMFY_GEN_INFO_CACHE_PATH.write_text(
         json.dumps({
+            "version": _CACHE_SCHEMA_VERSION,
             "samplers": _cache["samplers"],
             "schedulers": _cache["schedulers"],
-            "loras": _cache["loras"],
+            "loras": _cache["lora_details"],
             "fetched_at": _cache["fetched_at"],
         }, indent=2) + "\n",
         encoding="utf-8",
@@ -116,7 +133,10 @@ def _run_refresh(cmd: list[str]) -> None:
         _cache["samplers"] = data.get("samplers", [])
         _cache["schedulers"] = data.get("schedulers", [])
         loras = data.get("loras", [])
-        _cache["loras"] = [item["filename"] for item in loras if isinstance(item, dict) and "filename" in item]
+        details = [item for item in loras
+                   if isinstance(item, dict) and "filename" in item]
+        _cache["lora_details"] = details
+        _cache["loras"] = [item["filename"] for item in details]
         _cache["fetched_at"] = time.time()
         _save_cache_to_disk()
         _refresh_state["status"] = f"Done — {len(_cache['samplers'])} samplers, {len(_cache['schedulers'])} schedulers, {len(_cache['loras'])} loras"
@@ -1133,6 +1153,76 @@ _PROGRESS_RE = re.compile(
 )
 
 
+# ---- Submit stdout classification ----
+
+
+class SubmitResult:
+    """Result of parsing+classifying `comfy-gen submit` stdout.
+
+    Caller decides what to surface based on `kind`; the helper is
+    exit-code-agnostic so structured errors (e.g. missing_models) are
+    recognized whether the CLI exited 0 or 1.
+    """
+    __slots__ = ("kind", "parsed", "missing_models", "error_type", "error_message", "raw")
+
+    def __init__(self, kind: str, *, parsed: dict[str, Any] | None = None,
+                 missing_models: list[dict[str, Any]] | None = None,
+                 error_type: str | None = None, error_message: str = "", raw: str = ""):
+        # kind: 'success' | 'missing_models' | 'structured_error' | 'parse_failure' | 'empty'
+        self.kind = kind
+        self.parsed = parsed
+        self.missing_models = list(missing_models) if missing_models else []
+        self.error_type = error_type
+        self.error_message = error_message
+        self.raw = raw
+
+
+def _classify_submit_stdout(stdout: str) -> SubmitResult:
+    """Parse + classify `comfy-gen submit` stdout once, regardless of returncode.
+
+    Replaces the two parallel error-handling branches that used to live
+    inside `_run_comfy_job` (one inside `if returncode != 0`, one inside
+    the rc==0 success path). Audit item A.1.5.
+    """
+    if not stdout.strip():
+        return SubmitResult(kind="empty", raw=stdout)
+    try:
+        parsed = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return SubmitResult(kind="parse_failure", raw=stdout)
+    if not isinstance(parsed, dict):
+        return SubmitResult(kind="parse_failure", raw=stdout)
+
+    output_data = parsed.get("output") if isinstance(parsed.get("output"), dict) else {}
+    error_type = parsed.get("error_type") or output_data.get("error_type")
+
+    if error_type == "missing_models":
+        missing = parsed.get("missing_models") or output_data.get("missing_models") or []
+        message = (parsed.get("error_message")
+                   or output_data.get("error_message")
+                   or "Missing models")
+        return SubmitResult(
+            kind="missing_models",
+            parsed=parsed,
+            missing_models=list(missing),
+            error_type=error_type,
+            error_message=message,
+        )
+
+    if error_type:
+        message = (parsed.get("error_message")
+                   or output_data.get("error_message")
+                   or error_type)
+        return SubmitResult(
+            kind="structured_error",
+            parsed=parsed,
+            error_type=error_type,
+            error_message=message,
+        )
+
+    return SubmitResult(kind="success", parsed=parsed)
+
+
 def _parse_progress_line(line: str) -> dict[str, Any] | None:
     """Parse a comfy-gen stderr progress line into structured data."""
     m = _PROGRESS_RE.match(line.strip())
@@ -1262,50 +1352,44 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
         assert proc.stdout is not None
         stdout = proc.stdout.read()
 
-        if proc.returncode != 0:
-            error_msg = stdout.strip() if stdout.strip() else f"comfy-gen exited with code {proc.returncode}"
-            # Try to extract structured error from JSON
-            try:
-                err_data = json.loads(stdout)
-                # Check for missing_models structured error
-                if err_data.get("error_type") == "missing_models":
-                    missing = err_data.get("missing_models", [])
-                    error_msg = err_data.get("error_message", error_msg)
-                    services._update_job(job_id, status="FAILED", error=error_msg,
-                                         missing_models=missing,
-                                         elapsed_seconds=round(time.time() - t0, 3))
-                    return
-                error_msg = err_data.get("error_message") or err_data.get("error", error_msg)
-            except (json.JSONDecodeError, ValueError):
-                pass
-            services._update_job(job_id, status="FAILED", error=error_msg,
-                                 elapsed_seconds=round(time.time() - t0, 3))
+        # Single parse+classify pass — works for rc==0 AND rc!=0, surfacing
+        # any structured error (missing_models, future error_types) before
+        # falling back to exit-code-based generic failure messages.
+        classification = _classify_submit_stdout(stdout)
+        elapsed = round(time.time() - t0, 3)
+
+        if classification.kind == "missing_models":
+            services._update_job(job_id, status="FAILED",
+                                 error=classification.error_message,
+                                 missing_models=classification.missing_models,
+                                 elapsed_seconds=elapsed)
             return
 
-        # Parse JSON output from stdout
-        try:
-            result = json.loads(stdout)
-        except (json.JSONDecodeError, ValueError):
+        if classification.kind == "structured_error":
             services._update_job(job_id, status="FAILED",
-                                 error=f"Invalid JSON from comfy-gen: {stdout[:500]}",
-                                 elapsed_seconds=round(time.time() - t0, 3))
+                                 error=classification.error_message,
+                                 elapsed_seconds=elapsed)
             return
+
+        if classification.kind in ("parse_failure", "empty"):
+            if proc.returncode != 0:
+                error_msg = (stdout.strip()
+                             or f"comfy-gen exited with code {proc.returncode}")
+            else:
+                error_msg = (f"Invalid JSON from comfy-gen: {stdout[:500]}"
+                             if classification.kind == "parse_failure"
+                             else "comfy-gen returned empty output")
+            services._update_job(job_id, status="FAILED", error=error_msg,
+                                 elapsed_seconds=elapsed)
+            return
+
+        # kind == "success" — proceed with the result envelope.
+        result = classification.parsed
 
         # Extract output URL from comfy-gen result
         output_data = result.get("output", {})
         media_url = output_data.get("url", "")
         if not media_url:
-            # Check for missing_models structured error from comfy-gen
-            error_type = result.get("error_type") or output_data.get("error_type")
-            if error_type == "missing_models":
-                missing = result.get("missing_models") or output_data.get("missing_models") or []
-                error_msg = result.get("error_message") or output_data.get("error_message") or "Missing models"
-                services._update_job(job_id, status="FAILED",
-                                     error=error_msg,
-                                     missing_models=missing,
-                                     elapsed_seconds=round(time.time() - t0, 3))
-                return
-
             # Build a readable error from available info
             error_parts: list[str] = []
 
@@ -1731,24 +1815,48 @@ def cancel(job_id: str) -> JSONResponse:
                 pass
         print(f"[comfy-gen] Killed subprocess for job {job_id}", flush=True)
 
-    # Cancel the remote RunPod job
+    # Cancel the remote RunPod job. The UI distinguishes outcomes so it
+    # can offer retry only for timeout (the common RunPod-slow case)
+    # without retrying genuine errors.
     cancelled_remote = False
+    remote_cancel_status = "no_remote_id"
+    remote_cancel_error = ""
     if remote_job_id:
+        cmd = ["comfy-gen", "cancel", remote_job_id]
+        if endpoint_id:
+            cmd.extend(["--endpoint-id", endpoint_id])
+        print(f"[comfy-gen] Cancel command: {' '.join(cmd)}", flush=True)
         try:
-            cmd = ["comfy-gen", "cancel", remote_job_id]
-            if endpoint_id:
-                cmd.extend(["--endpoint-id", endpoint_id])
-            print(f"[comfy-gen] Cancel command: {' '.join(cmd)}", flush=True)
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            cancelled_remote = True
-            print(f"[comfy-gen] Cancelled remote job {remote_job_id} for {job_id}", flush=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                cancelled_remote = True
+                remote_cancel_status = "ok"
+                print(f"[comfy-gen] Cancelled remote job {remote_job_id} for {job_id}", flush=True)
+            else:
+                remote_cancel_status = "error"
+                remote_cancel_error = (result.stderr.strip() or result.stdout.strip()
+                                       or f"exit {result.returncode}")
+                print(f"[comfy-gen] Cancel exit {result.returncode}: {remote_cancel_error}", flush=True)
             if result.stdout.strip():
                 print(f"[comfy-gen] Cancel stdout: {result.stdout.strip()}", flush=True)
             if result.stderr.strip():
                 print(f"[comfy-gen] Cancel stderr: {result.stderr.strip()}", flush=True)
+        except subprocess.TimeoutExpired:
+            remote_cancel_status = "timeout"
+            remote_cancel_error = "RunPod cancel API did not respond within 30s"
+            print(f"[comfy-gen] Cancel timeout for remote job {remote_job_id}", flush=True)
         except Exception as e:
+            remote_cancel_status = "error"
+            remote_cancel_error = str(e)
             print(f"[comfy-gen] Failed to cancel remote job {remote_job_id}: {e}", flush=True)
 
     services._update_job(job_id, status="CANCELLED", error="Cancelled by user")
 
-    return JSONResponse({"ok": True, "cancelled_remote": cancelled_remote})
+    response: dict[str, Any] = {
+        "ok": True,
+        "cancelled_remote": cancelled_remote,
+        "remote_cancel_status": remote_cancel_status,
+    }
+    if remote_cancel_error:
+        response["remote_cancel_error"] = remote_cancel_error
+    return JSONResponse(response)
