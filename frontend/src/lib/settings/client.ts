@@ -319,6 +319,11 @@ export type InstalledPresetWorkflow = {
   // Optional knobs (sgs-ui-gb4) — absent when the preset author didn't declare
   // any. ComfyGen block treats missing as [].
   settings?: WorkflowSetting[]
+  // sgs-ui-2hf: node IDs the preset author wants suppressed from the
+  // ComfyGen block's auto-detected panels. Hidden nodes still execute
+  // with whatever values the workflow JSON ships. Absent / empty → no
+  // suppression.
+  hidden_nodes?: string[]
 }
 
 // sgs-ui-fmy: optional prose tips authored alongside the preset. Scoped

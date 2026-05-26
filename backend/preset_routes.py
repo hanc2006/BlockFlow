@@ -712,28 +712,38 @@ def _fetch_workflows_for_preset(preset: dict) -> list[dict]:
         # Only attach when the array is non-empty so legacy / unannotated
         # workflows keep their compact {name, json} shape.
         settings = entry.get("settings")
-        if "json" in entry and isinstance(entry["json"], dict):
-            item: dict = {"name": name, "json": entry["json"]}
+        # sgs-ui-2hf: author-declared list of workflow node IDs to suppress
+        # from the ComfyGen block's auto-detected panels. Same compact-shape
+        # convention as `settings` — only attach when non-empty. Coerce IDs
+        # to strings (some preset authors write integers; ComfyUI workflow
+        # JSON keys are strings, so frontend Set.has comparisons need strings).
+        raw_hidden = entry.get("hidden_nodes")
+        hidden_nodes = (
+            [str(n) for n in raw_hidden if n is not None]
+            if isinstance(raw_hidden, list) and raw_hidden
+            else None
+        )
+
+        def _attach_extras(item: dict) -> dict:
             if isinstance(settings, list) and settings:
                 item["settings"] = settings
-            out.append(item)
+            if hidden_nodes:
+                item["hidden_nodes"] = hidden_nodes
+            return item
+
+        if "json" in entry and isinstance(entry["json"], dict):
+            out.append(_attach_extras({"name": name, "json": entry["json"]}))
             continue
         url = entry.get("url")
         if not url:
-            item = {"name": name, "json": {}}
-            if isinstance(settings, list) and settings:
-                item["settings"] = settings
-            out.append(item)
+            out.append(_attach_extras({"name": name, "json": {}}))
             continue
         try:
             resp = _cffi_requests.get(url, timeout=_HTTP_TIMEOUT_SEC)
             body = resp.json() if resp.status_code < 400 else {}
         except Exception:
             body = {}
-        item = {"name": name, "json": body}
-        if isinstance(settings, list) and settings:
-            item["settings"] = settings
-        out.append(item)
+        out.append(_attach_extras({"name": name, "json": body}))
     return out
 
 
