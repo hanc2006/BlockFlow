@@ -988,6 +988,129 @@ def test_install_inline_workflow_carries_settings(client, install_ready, mocker)
     ]
 
 
+# === sgs-ui-2hf: workflows[].hidden_nodes pass-through ======================
+
+def test_install_persists_hidden_nodes_through_install(client, install_ready, mocker):
+    """workflows[].hidden_nodes must round-trip end-to-end: preset.json →
+    install → settings_store → /installed/{id} response carries the same
+    list. UI uses it to suppress auto-detected panels for those nodes."""
+    inline = {"3": {"class_type": "KSampler"}, "77": {"class_type": "LoraLoader"}}
+    preset = {
+        **QWEN_FULL_PRESET,
+        "id": "inline-hidden",
+        "workflows": [
+            {
+                "name": "Default",
+                "json": inline,
+                "hidden_nodes": ["3", "77"],
+            }
+        ],
+    }
+
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([{**_qwen_preset_entry(), "id": "inline-hidden", "preset_url": "https://example/preset.json"}]))
+        if "preset.json" in url:
+            return _mock_response(preset)
+        return _mock_response({}, status=404)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
+    mocker.patch.object(preset_routes.subprocess, "Popen",
+                        return_value=_install_preset_success_proc(num_files=2))
+
+    r = client.post("/api/presets/install", json={"preset_id": "inline-hidden"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    detail = client.get("/api/presets/installed/inline-hidden").json()
+    wf = detail["workflow_json"][0]
+    assert wf["name"] == "Default"
+    assert wf["hidden_nodes"] == ["3", "77"]
+
+
+def test_install_omits_hidden_nodes_when_field_absent(client, install_ready, mocker):
+    """A workflow without hidden_nodes must NOT acquire an empty list in
+    the response — keeps payloads compact for the common case (matches
+    the same convention as the `settings` field)."""
+    preset = {
+        **QWEN_FULL_PRESET,
+        "id": "no-hide",
+        "workflows": [{"name": "Default", "json": {"3": {"class_type": "KSampler"}}}],
+    }
+
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([{**_qwen_preset_entry(), "id": "no-hide", "preset_url": "https://example/preset.json"}]))
+        if "preset.json" in url:
+            return _mock_response(preset)
+        return _mock_response({}, status=404)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
+    mocker.patch.object(preset_routes.subprocess, "Popen",
+                        return_value=_install_preset_success_proc(num_files=2))
+
+    r = client.post("/api/presets/install", json={"preset_id": "no-hide"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    detail = client.get("/api/presets/installed/no-hide").json()
+    wf = detail["workflow_json"][0]
+    assert "hidden_nodes" not in wf
+
+
+def test_install_drops_empty_hidden_nodes_list(client, install_ready, mocker):
+    """`hidden_nodes: []` in the preset should NOT survive into the
+    response — empty list is functionally identical to absent and we
+    keep the response compact (same convention as `settings`)."""
+    preset = {
+        **QWEN_FULL_PRESET,
+        "id": "empty-hide",
+        "workflows": [{"name": "Default", "json": {"3": {}}, "hidden_nodes": []}],
+    }
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([{**_qwen_preset_entry(), "id": "empty-hide", "preset_url": "https://example/preset.json"}]))
+        if "preset.json" in url:
+            return _mock_response(preset)
+        return _mock_response({}, status=404)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
+    mocker.patch.object(preset_routes.subprocess, "Popen",
+                        return_value=_install_preset_success_proc(num_files=2))
+
+    r = client.post("/api/presets/install", json={"preset_id": "empty-hide"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    detail = client.get("/api/presets/installed/empty-hide").json()
+    assert "hidden_nodes" not in detail["workflow_json"][0]
+
+
+def test_install_coerces_hidden_node_ids_to_strings(client, install_ready, mocker):
+    """A preset author may write `hidden_nodes: [3, 77]` (integers). Node
+    IDs in ComfyUI workflow JSON are stringly-typed (keys are strings),
+    so the response must normalize to strings so frontend Set.has(String(id))
+    comparisons work correctly."""
+    preset = {
+        **QWEN_FULL_PRESET,
+        "id": "int-hide",
+        "workflows": [{"name": "Default", "json": {"3": {}}, "hidden_nodes": [3, 77]}],
+    }
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([{**_qwen_preset_entry(), "id": "int-hide", "preset_url": "https://example/preset.json"}]))
+        if "preset.json" in url:
+            return _mock_response(preset)
+        return _mock_response({}, status=404)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
+    mocker.patch.object(preset_routes.subprocess, "Popen",
+                        return_value=_install_preset_success_proc(num_files=2))
+
+    r = client.post("/api/presets/install", json={"preset_id": "int-hide"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    detail = client.get("/api/presets/installed/int-hide").json()
+    assert detail["workflow_json"][0]["hidden_nodes"] == ["3", "77"]
+
+
 # === sgs-ui-gb4 follow-up: refresh installed presets ========================
 
 def test_refresh_installed_presets_updates_workflow_blob(client):
