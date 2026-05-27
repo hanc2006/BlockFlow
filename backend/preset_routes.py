@@ -59,7 +59,7 @@ _CACHE_TTL_SEC = 3600  # 1 hour
 _HTTP_TIMEOUT_SEC = 15
 
 # Persistent fallback cache (survives process restarts → offline-friendly).
-_CACHE_PATH: Path = config.ROOT_DIR / "preset_manifest_cache.json"
+_CACHE_PATH: Path = config.PRESET_MANIFEST_CACHE_PATH
 
 # In-memory cache
 _cache: dict[str, Any] = {
@@ -772,7 +772,7 @@ def _run_gpu_install_subprocess(
     `files_done` per stderr line that looks like progress. install_mode
     is persisted as 'gpu' and pod_id stays None (the endpoint isn't a
     pod BlockFlow controls)."""
-    log_path = config.ROOT_DIR / "preset_install.log"
+    log_path = config.PRESET_INSTALL_LOG_PATH
     log_fp = log_path.open("a", buffering=1)
     log_fp.write(
         f"\n\n=== {_now_iso()} preset={preset_id} START (GPU fallback) ===\n"
@@ -928,7 +928,7 @@ def _run_install_subprocess(
     Stderr is teed to preset_install.log AND to a rolling tail in
     _install_state["log_tail"] for the live UI feed.
     """
-    log_path = config.ROOT_DIR / "preset_install.log"
+    log_path = config.PRESET_INSTALL_LOG_PATH
     log_fp = log_path.open("a", buffering=1)
     log_fp.write(f"\n\n=== {_now_iso()} preset={preset_id} START (install-preset CLI) ===\n")
 
@@ -1595,7 +1595,7 @@ def uninstall(preset_id: str) -> JSONResponse:
             ),
         )
 
-    log_path = config.ROOT_DIR / "preset_install.log"
+    log_path = config.PRESET_INSTALL_LOG_PATH
     log_fp = log_path.open("a", buffering=1)
     log_fp.write(f"\n\n=== {_now_iso()} uninstall preset={preset_id} ===\n")
     try:

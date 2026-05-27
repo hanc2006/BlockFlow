@@ -7,7 +7,7 @@ from typing import Any
 
 from backend import config
 
-DB_PATH = config.ROOT_DIR / "run_history.db"
+DB_PATH = config.RUN_HISTORY_DB_PATH
 _lock = threading.Lock()
 
 

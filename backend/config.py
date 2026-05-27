@@ -1,17 +1,138 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 from pathlib import Path
 
 APP_TITLE = "BlockFlow"
 ROOT_DIR = Path(__file__).resolve().parent.parent
-LOCAL_OUTPUT_DIR = ROOT_DIR / "output"
+
+
+# === sgs-ui-5ni: user data lives outside the running checkout =================
+#
+# Before sgs-ui-5ni every user-data file (prompt_library.json, run_history.db,
+# flows/, output/, …) was rooted at ROOT_DIR. Each git worktree got its own
+# isolated copy, and launching the app from a worktree silently swapped in
+# fresh empty state. Now resolved to a stable platform location and migrated
+# from the legacy ROOT_DIR layout on first launch.
+
+def resolve_user_data_dir() -> Path:
+    """Resolution order:
+      1. $BLOCKFLOW_DATA_DIR (explicit override; respected verbatim).
+      2. macOS:   ~/Library/Application Support/blockflow
+      3. Linux:   $XDG_DATA_HOME/blockflow if set, else ~/.local/share/blockflow
+      4. Windows: %LOCALAPPDATA%\\blockflow if set, else ~/AppData/Local/blockflow
+                  (LOCALAPPDATA is machine-local — right choice for a multi-GB
+                  SQLite DB; APPDATA would sync via Windows roaming profiles.)
+      5. Other:   ~/.blockflow (catch-all so worktrees don't fragment).
+    """
+    explicit = os.environ.get("BLOCKFLOW_DATA_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "blockflow"
+    if sys.platform.startswith("linux"):
+        xdg = os.environ.get("XDG_DATA_HOME")
+        if xdg:
+            return Path(xdg) / "blockflow"
+        return Path.home() / ".local" / "share" / "blockflow"
+    if sys.platform == "win32" or sys.platform.startswith("cygwin"):
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            return Path(local_appdata) / "blockflow"
+        return Path.home() / "AppData" / "Local" / "blockflow"
+    return Path.home() / ".blockflow"
+
+
+# Files that lived under ROOT_DIR before sgs-ui-5ni and must follow the user
+# across worktrees / checkouts. List comprehension keeps the migration loop
+# below in lockstep with the path constants below.
+_LEGACY_USER_FILES: tuple[str, ...] = (
+    "prompt_library.json",
+    "prompt_writer_settings.json",
+    "job_history.json",
+    "comfy_gen_info_cache.json",
+    "run_history.db",
+    "preset_manifest_cache.json",
+    "preset_install.log",
+)
+_LEGACY_USER_DIRS: tuple[str, ...] = (
+    "flows",
+    "output",
+)
+_MIGRATION_BREADCRUMB = ".migrated_from_root"
+
+
+def migrate_legacy_user_data(*, legacy_root: Path, user_data_dir: Path) -> None:
+    """One-shot migration from the pre-sgs-ui-5ni layout. Idempotent via a
+    breadcrumb file in the target dir.
+
+    Safety rules:
+      - Never clobber a target that already exists — the legacy file is left
+        on disk so the user can reconcile manually.
+      - The breadcrumb is written even when no legacy data was found, so
+        we don't re-scan ROOT_DIR forever on every launch.
+    """
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+    breadcrumb = user_data_dir / _MIGRATION_BREADCRUMB
+    if breadcrumb.exists():
+        return
+
+    for name in _LEGACY_USER_FILES:
+        legacy = legacy_root / name
+        current = user_data_dir / name
+        if legacy.exists() and not current.exists():
+            shutil.move(str(legacy), str(current))
+
+    for name in _LEGACY_USER_DIRS:
+        legacy = legacy_root / name
+        current = user_data_dir / name
+        if not legacy.is_dir():
+            continue
+        if not current.exists():
+            shutil.move(str(legacy), str(current))
+            continue
+        # Target exists — merge legacy contents into it, never clobber.
+        # Important: a stub target (created by config.py's import-time mkdir
+        # plus subdirs added by custom_blocks on import) counts as "non-empty"
+        # but holds no real user data. Merging item-by-item is the right
+        # semantic: each legacy entry lands at target/<name> only when there's
+        # no existing entry there, so real user data is preserved either way.
+        for item in legacy.iterdir():
+            target_item = current / item.name
+            if target_item.exists():
+                continue  # conflict — leave legacy item alone
+            shutil.move(str(item), str(target_item))
+        # Best-effort cleanup of the now-(probably-)empty legacy dir.
+        try:
+            legacy.rmdir()
+        except OSError:
+            pass  # legacy still has conflicts in it — leave for owner
+
+    breadcrumb.write_text(
+        "sgs-ui-5ni one-shot migration marker — delete to re-run migration.\n",
+        encoding="utf-8",
+    )
+
+
+USER_DATA_DIR = resolve_user_data_dir()
+USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+# Migration is NOT run at import time on purpose: pytest collection imports
+# backend.config and would otherwise trigger the side-effecting move against
+# the user's real ~/Library/Application Support/blockflow on first test run.
+# main.py calls migrate_legacy_user_data(...) once at process startup.
+
+LOCAL_OUTPUT_DIR = USER_DATA_DIR / "output"
 LOCAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-FLOWS_DIR = ROOT_DIR / "flows"
+FLOWS_DIR = USER_DATA_DIR / "flows"
 FLOWS_DIR.mkdir(parents=True, exist_ok=True)
-JOB_HISTORY_PATH = ROOT_DIR / "job_history.json"
-PROMPT_WRITER_SETTINGS_PATH = ROOT_DIR / "prompt_writer_settings.json"
-PROMPT_LIBRARY_PATH = ROOT_DIR / "prompt_library.json"
+JOB_HISTORY_PATH = USER_DATA_DIR / "job_history.json"
+PROMPT_WRITER_SETTINGS_PATH = USER_DATA_DIR / "prompt_writer_settings.json"
+PROMPT_LIBRARY_PATH = USER_DATA_DIR / "prompt_library.json"
+RUN_HISTORY_DB_PATH = USER_DATA_DIR / "run_history.db"
+PRESET_MANIFEST_CACHE_PATH = USER_DATA_DIR / "preset_manifest_cache.json"
+PRESET_INSTALL_LOG_PATH = USER_DATA_DIR / "preset_install.log"
 
 
 def _load_env_file(path: Path) -> None:
@@ -105,7 +226,7 @@ Z_IMAGE_LORA_SSH_CONNECT_TIMEOUT_SEC = int(
 Z_IMAGE_LORA_LIST_CACHE_TTL_SEC = int(os.getenv("Z_IMAGE_LORA_LIST_CACHE_TTL_SEC", str(LORA_LIST_CACHE_TTL_SEC)))
 QWEN_IMAGE_ALWAYS_ON_LORA = os.getenv("QWEN_IMAGE_ALWAYS_ON_LORA", "Qwen-Image-Lightning-8steps-V1.0.safetensors").strip()
 
-COMFY_GEN_INFO_CACHE_PATH = ROOT_DIR / "comfy_gen_info_cache.json"
+COMFY_GEN_INFO_CACHE_PATH = USER_DATA_DIR / "comfy_gen_info_cache.json"
 
 ADVANCED_MODE = os.getenv("SGS_ADVANCED", "").strip().lower() in ("1", "true", "yes")
 

@@ -23,7 +23,7 @@ from typing import Any
 from backend import config
 
 # Same file as backend.db.DB_PATH — settings tables coexist with `runs`.
-DB_PATH: Path = config.ROOT_DIR / "run_history.db"
+DB_PATH: Path = config.RUN_HISTORY_DB_PATH
 
 _lock = threading.Lock()
 

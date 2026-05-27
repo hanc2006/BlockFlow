@@ -39,6 +39,12 @@ app.include_router(wizard_routes.router)
 app.include_router(preset_routes.router)
 app.include_router(lora_routes.router)
 
+# sgs-ui-5ni: migrate user data out of ROOT_DIR on first launch. Must run
+# BEFORE init_db() — that opens run_history.db, which the migration moves.
+config.migrate_legacy_user_data(
+    legacy_root=config.ROOT_DIR, user_data_dir=config.USER_DATA_DIR,
+)
+
 # Ensure the settings tables exist before any block sidecar (which may read
 # Settings on import in later beads). Safe to call repeatedly — it's a no-op
 # once the tables are present.
@@ -98,7 +104,13 @@ def _refresh_installed_presets_on_startup() -> None:
     threading.Thread(target=_runner, daemon=True).start()
 
 
-_refresh_installed_presets_on_startup()
+# sgs-ui-5ni: skip under pytest. The background refresh thread races with
+# tests that mock _cffi_requests.get and assert on _cache state — its
+# real-network response can populate _cache mid-test and break TTL-based
+# assertions. Under real uvicorn launch, pytest is never in sys.modules.
+import sys as _sys
+if "pytest" not in _sys.modules:
+    _refresh_installed_presets_on_startup()
 
 
 # sgs-ui-c7n: belt-and-suspenders cleanup for installer pods. Pods do not
