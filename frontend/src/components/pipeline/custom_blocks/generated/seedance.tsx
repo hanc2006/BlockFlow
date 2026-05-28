@@ -10,6 +10,7 @@ import { Slider } from '@/components/ui/slider'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
 import { toPublicUrls } from '@/lib/image-ref'
+import { toPublicUrls as toPublicVideoUrls, toDisplayUrls as toDisplayVideoUrls } from '@/lib/video-ref'
 import {
   PORT_IMAGE,
   PORT_TEXT,
@@ -184,7 +185,11 @@ function SeedanceBlock({
   }, [setPrompt])
 
   const upstreamImageUrls = Array.from(new Set(toPublicUrls(inputs.image)))
-  const upstreamVideoUrls = asUrlList(inputs.video).map(toLocalOrigin)
+  // Video refs: use video-ref helper so we pick the tmpfiles URL (PiAPI-
+  // fetchable) over the /outputs path when both are available. For audio,
+  // legacy bare-string emitters get passed through asUrlList + rewritten
+  // to absolute origin so the local mp3 served by /outputs is reachable.
+  const upstreamVideoUrls = toPublicVideoUrls(inputs.video)
   const upstreamAudioUrls = asUrlList(inputs.audio).map(toLocalOrigin)
   const upstreamPrompt = toText(inputs.text).trim()
 
@@ -278,7 +283,7 @@ function SeedanceBlock({
       if (!finalPrompt.trim()) throw new Error('Prompt is empty.')
 
       const upImages = Array.from(new Set(toPublicUrls(freshInputs.image)))
-      const upVideos = asUrlList(freshInputs.video).map(toLocalOrigin)
+      const upVideos = toPublicVideoUrls(freshInputs.video)
       const upAudios = asUrlList(freshInputs.audio).map(toLocalOrigin)
       const imageUrls = Array.from(new Set([...upImages, ...localImageUrls]))
       const videoUrls = Array.from(new Set([...upVideos, ...localVideoUrls]))

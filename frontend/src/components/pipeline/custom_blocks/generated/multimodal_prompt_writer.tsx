@@ -24,6 +24,7 @@ import {
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
 import { toDisplayUrls, toPublicUrls } from '@/lib/image-ref'
+import { toPublicUrls as toPublicVideoUrls } from '@/lib/video-ref'
 import {
   PORT_IMAGE,
   PORT_TEXT,
@@ -150,7 +151,9 @@ function MultimodalPromptWriterBlock({
   const [error, setError] = useState('')
 
   const upstreamImageUrls = toDisplayUrls(inputs.image)
-  const upstreamVideoUrls = asVideoUrls(inputs.video).map(toLocalOrigin)
+  // OpenRouter needs a public URL (it fetches server-side) — pick the
+  // tmpfiles form when video-loader provided both.
+  const upstreamVideoUrls = toPublicVideoUrls(inputs.video)
   const upstreamAudioUrls = asAudioUrls(inputs.audio).map(toLocalOrigin)
   const upstreamText = toText(inputs.text).trim()
 
@@ -292,7 +295,7 @@ function MultimodalPromptWriterBlock({
   useEffect(() => {
     registerExecute(async (freshInputs) => {
       const refImages = toDisplayUrls(freshInputs.image)
-      const refVideos = asVideoUrls(freshInputs.video).map(toLocalOrigin)
+      const refVideos = toPublicVideoUrls(freshInputs.video)
       const refAudios = asAudioUrls(freshInputs.audio).map(toLocalOrigin)
       const ctxText = toText(freshInputs.text).trim()
       const mergedImages = Array.from(new Set([...refImages, ...localImageUrls]))
