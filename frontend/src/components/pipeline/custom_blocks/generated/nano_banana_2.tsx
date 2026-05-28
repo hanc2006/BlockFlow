@@ -2,10 +2,11 @@
 // Source: custom_blocks/nano_banana_2/frontend.block.tsx
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useSessionState } from '@/lib/use-session-state'
+import { pickFiles } from '@/lib/file-picker'
 import { toPublicUrls } from '@/lib/image-ref'
 import {
   PORT_IMAGE,
@@ -50,8 +51,14 @@ function NanoBanana2Block({
   const [useUpstreamPrompt, setUseUpstreamPrompt] = useSessionState<boolean>(`block_${blockId}_use_upstream_prompt`, false)
   const [healthy, setHealthy] = useState<boolean | null>(null)
   const [progress, setProgress] = useState<JobSnap | null>(null)
+  const [localRefs, setLocalRefs] = useSessionState<string[]>(`block_${blockId}_local_refs`, [])
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const dragCounter = useRef(0)
+  const [isDragging, setIsDragging] = useState(false)
 
-  const refUrls = Array.from(new Set(toPublicUrls(inputs.image)))
+  const upstreamRefs = Array.from(new Set(toPublicUrls(inputs.image)))
+  const refUrls = Array.from(new Set([...upstreamRefs, ...localRefs]))
   const upstreamPrompt = toText(inputs.text).trim()
 
   useEffect(() => {
@@ -61,11 +68,80 @@ function NanoBanana2Block({
       .catch(() => setHealthy(false))
   }, [])
 
+  const uploadOne = useCallback(async (file: File): Promise<string> => {
+    const buf = await file.arrayBuffer()
+    const res = await fetch('/api/blocks/upload_image_to_tmpfiles/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Filename': file.name,
+        'X-Content-Type': file.type || 'image/png',
+      },
+      body: buf,
+    })
+    const data = await res.json()
+    if (!data.ok || !data.image_url) throw new Error(data.error || 'upload failed')
+    return data.image_url as string
+  }, [])
+
+  const addFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0) return
+    setUploadError('')
+    setUploading(true)
+    try {
+      const results: string[] = []
+      for (const f of files) {
+        if (!f.type.startsWith('image/')) continue
+        try {
+          const url = await uploadOne(f)
+          results.push(url)
+        } catch (e) {
+          setUploadError(e instanceof Error ? e.message : String(e))
+        }
+      }
+      if (results.length > 0) {
+        setLocalRefs((prev) => Array.from(new Set([...prev, ...results])).slice(0, MAX_REFERENCES))
+      }
+    } finally {
+      setUploading(false)
+    }
+  }, [uploadOne, setLocalRefs])
+
+  const onPick = useCallback(async () => {
+    const picked = await pickFiles({ slug: 'nano_banana_2', accept: 'image/*', multiple: true, description: 'Reference images' })
+    if (picked) addFiles(picked)
+  }, [addFiles])
+
+  const onDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation()
+    dragCounter.current = 0
+    setIsDragging(false)
+    const dropped = Array.from(e.dataTransfer.files)
+    addFiles(dropped)
+  }, [addFiles])
+
+  const onDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation()
+    dragCounter.current++
+    if (dragCounter.current === 1) setIsDragging(true)
+  }, [])
+
+  const onDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation()
+    dragCounter.current--
+    if (dragCounter.current === 0) setIsDragging(false)
+  }, [])
+
+  const removeLocalRef = useCallback((url: string) => {
+    setLocalRefs((prev) => prev.filter((u) => u !== url))
+  }, [setLocalRefs])
+
   useEffect(() => {
     registerExecute(async (freshInputs, signal) => {
-      const refs = Array.from(new Set(toPublicUrls(freshInputs.image)))
+      const upstream = Array.from(new Set(toPublicUrls(freshInputs.image)))
+      const refs = Array.from(new Set([...upstream, ...localRefs]))
       if (refs.length === 0) {
-        throw new Error('Nano Banana 2 is an edit model — connect an Upload Image (Tmpfiles) upstream.')
+        throw new Error('Nano Banana 2 needs at least one reference image — drop files into the block or wire an Upload Image upstream.')
       }
       if (refs.length > MAX_REFERENCES) {
         throw new Error(`Too many references (${refs.length}). Max ${MAX_REFERENCES}.`)
@@ -177,20 +253,78 @@ function NanoBanana2Block({
 
       {/* References */}
       <div className="space-y-1">
-        <Label className="text-[11px]">Reference images (from upstream)</Label>
-        <div className="rounded border border-border/60 p-1.5 min-h-[44px]">
+        <div className="flex items-center justify-between">
+          <Label className="text-[11px]">Reference images</Label>
+          <span className="text-[10px] text-muted-foreground">
+            {refUrls.length} / {MAX_REFERENCES}
+            {upstreamRefs.length > 0 && localRefs.length > 0
+              ? ` · ${upstreamRefs.length} upstream + ${localRefs.length} local`
+              : upstreamRefs.length > 0
+              ? ' upstream'
+              : localRefs.length > 0
+              ? ' local'
+              : ''}
+          </span>
+        </div>
+        <div
+          onDragEnter={onDragEnter}
+          onDragLeave={onDragLeave}
+          onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
+          onDrop={onDrop}
+          className={`rounded border p-1.5 min-h-[44px] transition-colors ${
+            isDragging ? 'border-primary bg-primary/10' : 'border-border/60'
+          }`}
+        >
           {refUrls.length === 0 ? (
-            <p className="text-[10px] text-muted-foreground italic">
-              Nano Banana 2 is an edit model — connect an Upload Image (Tmpfiles mode) upstream.
-            </p>
+            <div className="py-3 text-center">
+              <p className="text-[10px] text-muted-foreground italic">
+                Drop image files here, click below to pick, or connect Upload Image upstream.
+              </p>
+            </div>
           ) : (
             <div className="grid grid-cols-7 gap-1">
-              {refUrls.slice(0, MAX_REFERENCES).map((u, i) => (
-                <img key={i} src={u} alt={`ref ${i + 1}`} className="aspect-square w-full rounded object-cover" />
+              {upstreamRefs.slice(0, MAX_REFERENCES).map((u, i) => (
+                <div key={`up-${u}`} className="relative">
+                  <img src={u} alt={`ref ${i + 1}`} className="aspect-square w-full rounded object-cover" />
+                  <span className="absolute bottom-0 left-0 right-0 text-[8px] text-center bg-black/60 text-white rounded-b">up</span>
+                </div>
+              ))}
+              {localRefs.slice(0, MAX_REFERENCES - upstreamRefs.length).map((u, i) => (
+                <div key={`local-${u}`} className="relative group">
+                  <img src={u} alt={`local ref ${i + 1}`} className="aspect-square w-full rounded object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => removeLocalRef(u)}
+                    className="absolute top-0 right-0 bg-black/70 text-white text-[10px] leading-none rounded-bl px-1 py-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                    aria-label="remove reference"
+                  >
+                    ×
+                  </button>
+                </div>
               ))}
             </div>
           )}
         </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onPick}
+            disabled={uploading || refUrls.length >= MAX_REFERENCES}
+            className="text-[11px] px-2 py-1 rounded border border-border/60 hover:bg-muted/40 disabled:opacity-50"
+          >
+            {uploading ? 'uploading…' : '+ add image(s)'}
+          </button>
+          {localRefs.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setLocalRefs([])}
+              className="text-[10px] text-muted-foreground hover:text-foreground underline"
+            >
+              clear local
+            </button>
+          )}
+        </div>
+        {uploadError && <p className="text-[10px] text-red-400">{uploadError}</p>}
       </div>
 
       {healthy === false && (
