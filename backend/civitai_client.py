@@ -51,8 +51,11 @@ def parse_civitai_ref(raw: str) -> CivitAIRef:
     if parsed.scheme not in ("http", "https"):
         raise CivitAIRefError(f"unsupported scheme: {parsed.scheme!r}")
     host = (parsed.hostname or "").lower()
-    if host != "civitai.com" and not host.endswith(".civitai.com"):
-        raise CivitAIRefError(f"not a civitai.com URL (host={host!r})")
+    # civitai.red is the project's NSFW-tolerant mirror — same backend, same
+    # model IDs. Accept both hosts and their subdomains.
+    accepted = ("civitai.com", "civitai.red")
+    if host not in accepted and not any(host.endswith("." + h) for h in accepted):
+        raise CivitAIRefError(f"not a civitai URL (host={host!r})")
 
     parts = [p for p in parsed.path.split("/") if p]
     if len(parts) < 2 or parts[0] != "models":
@@ -106,6 +109,26 @@ def fetch_version_metadata(version_id: int, api_key: str = "") -> CivitAIVersion
     resp.raise_for_status()
     data = resp.json()
     return _version_metadata_from_payload(data, fallback_version_id=version_id)
+
+
+def fetch_version_by_hash(
+    sha256: str, api_key: str = ""
+) -> CivitAIVersionMetadata | None:
+    """Look up a model version by file SHA256. Returns None on 404 (the
+    common 'this LoRA isn't on CivitAI' case) so callers can render an
+    'Unknown' row instead of aborting a whole batch."""
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    sha = sha256.lower()
+    resp = _requests.get(
+        f"{CIVITAI_API_BASE}/model-versions/by-hash/{sha}",
+        headers=headers,
+        timeout=15,
+    )
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    data = resp.json()
+    return _version_metadata_from_payload(data, fallback_version_id=int(data.get("id") or 0))
 
 
 def fetch_latest_version_for_model(model_id: int, api_key: str = "") -> CivitAIVersionMetadata:

@@ -17,6 +17,7 @@ import {
   type BlockDef,
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
+import { toPublicUrls } from '@/lib/image-ref'
 
 const TOKEN_KEY = 'civitai_api_key'
 const SHARE_ENDPOINT = '/api/blocks/civitai_share/share'
@@ -24,28 +25,8 @@ const JOB_META_ENDPOINT = '/api/blocks/civitai_share/job-metadata'
 const FILE_META_ENDPOINT = '/api/blocks/civitai_share/file-metadata'
 const AUTO_TAGS_ENDPOINT = '/api/blocks/civitai_share/auto-tags'
 const SAVE_LOCAL_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/save-local'
-const POST_INFO_ENDPOINT = '/api/blocks/civitai_share/post-info'
-const ADD_TO_POST_ENDPOINT = '/api/blocks/civitai_share/add-to-post'
-
-type ShareMode = 'new' | 'edit'
-
-interface PostInfo {
-  id: number
-  title: string | null
-  modelVersionId: number | null
-  image_count: number
-  is_showcase: boolean
-}
-
-function parsePostId(input: string): number | null {
-  const trimmed = input.trim()
-  // Direct number
-  if (/^\d+$/.test(trimmed)) return parseInt(trimmed, 10)
-  // URL like civitai.com/posts/12345 or civitai.com/posts/12345/edit
-  const match = trimmed.match(/civitai\.com\/posts\/(\d+)/)
-  if (match) return parseInt(match[1], 10)
-  return null
-}
+const RESOLVE_HASHES_ENDPOINT = '/api/blocks/civitai_share/resolve-hashes'
+const RESOLVE_RESOURCE_ENDPOINT = '/api/blocks/civitai_share/resolve-resource'
 
 interface GenerationMeta {
   job_ids?: string[]
@@ -64,15 +45,35 @@ interface GenerationMeta {
   software?: string
 }
 
-import { toPublicUrls } from '@/lib/image-ref'
+interface ManualResource {
+  modelVersionId: number
+  modelId: number | null
+  name: string
+}
+
+interface ResolvedRow {
+  filename: string
+  sha256: string
+  resolved: boolean
+  modelVersionId?: number
+  modelId?: number
+  name?: string
+  strength?: number
+  isCheckpoint?: boolean
+}
+
+interface PendingApproval {
+  resolved: ResolvedRow[]
+  manualResources: ManualResource[]
+  mediaCount: number
+  promptPreview: string
+  tags: string[]
+  resolve: (decision: { approve: boolean; nsfw: boolean }) => void
+}
 
 function toMediaUrls(value: unknown): string[] {
-  // CivitAI ingest needs publicly fetchable URLs — bare local paths and
-  // blob: previews would fail. Image values can also be ImageRef objects
-  // (Upload Image), which toPublicUrls handles.
   if (typeof value === 'string') return value.trim().startsWith('http') ? [value.trim()] : []
   if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
-    // Video URLs come through as plain strings — preserve original behaviour.
     return (value as string[]).map((s) => s.trim()).filter(Boolean)
   }
   return toPublicUrls(value)
@@ -94,20 +95,22 @@ function CivitAIShareBlock({
     localStorage.setItem(TOKEN_KEY, v)
   }, [])
 
-  const [mode, setMode] = useSessionState<ShareMode>(`block_${blockId}_mode`, 'new')
   const [title, setTitle] = useSessionState(`block_${blockId}_title`, '')
   const [tags, setTags] = useSessionState(`block_${blockId}_tags`, 'wan2.2, ai video')
-  const [nsfw, setNsfw] = useSessionState(`block_${blockId}_nsfw`, true)
-  const [publish, setPublish] = useSessionState(`block_${blockId}_publish`, true)
+  const [manualResources, setManualResources] = useSessionState<ManualResource[]>(
+    `block_${blockId}_manual_resources`,
+    [],
+  )
   const [status, setStatus] = useSessionState(`block_${blockId}_share_status`, '')
-  const [editPostInput, setEditPostInput] = useSessionState(`block_${blockId}_edit_post_input`, '')
-  const [editPostInfo, setEditPostInfo] = useState<PostInfo | null>(null)
-  const [editPostError, setEditPostError] = useState('')
-  const [editPostLoading, setEditPostLoading] = useState(false)
+  const [resourceInput, setResourceInput] = useState('')
+  const [resourceError, setResourceError] = useState('')
+  const [resourceLoading, setResourceLoading] = useState(false)
   const [tagging, setTagging] = useState(false)
   const [localFiles, setLocalFiles] = useState<Array<{ file: File; previewUrl: string; outputUrl?: string }>>([])
   const [isDragging, setIsDragging] = useState(false)
   const dragCounterRef = useRef(0)
+  const [approval, setApproval] = useState<PendingApproval | null>(null)
+  const [gateNsfw, setGateNsfw] = useState(true)
 
   const videoUrls = toMediaUrls(inputs.video)
   const imageUrls = toMediaUrls(inputs.image)
@@ -115,6 +118,23 @@ function CivitAIShareBlock({
   const localUrls = localFiles.filter((f) => f.outputUrl).map((f) => f.outputUrl!)
   const mediaUrls = [...upstreamUrls, ...localUrls]
   const meta = (inputs.metadata || {}) as GenerationMeta
+
+  // Upstream status. The pipeline runtime doesn't expose edge metadata to
+  // the block component, so the truest signal we can give is "did any data
+  // arrive on any input port". A populated input port but no extractable
+  // media URLs means the upstream block emitted something we can't share
+  // (common case: Image Viewer declares an image output but never calls
+  // setOutput, so inputs.image stays undefined).
+  const upstreamHasAnyData =
+    inputs.image !== undefined ||
+    inputs.video !== undefined ||
+    inputs.metadata !== undefined ||
+    inputs.prompt !== undefined
+  const upstreamMediaKind = videoUrls.length > 0
+    ? `${videoUrls.length} video${videoUrls.length === 1 ? '' : 's'}`
+    : imageUrls.length > 0
+      ? `${imageUrls.length} image${imageUrls.length === 1 ? '' : 's'}`
+      : null
 
   const addFiles = useCallback(async (files: File[]) => {
     const mediaFiles = files.filter((f) => f.type.startsWith('image/') || f.type.startsWith('video/'))
@@ -127,7 +147,6 @@ function CivitAIShareBlock({
     }))
     setLocalFiles((prev) => [...prev, ...entries])
 
-    // Save each to /output/ so metadata can be read
     for (const entry of entries) {
       try {
         const res = await fetch(SAVE_LOCAL_ENDPOINT, {
@@ -159,37 +178,44 @@ function CivitAIShareBlock({
     if (files) addFiles(files)
   }, [addFiles])
 
-  const validatePost = useCallback(async () => {
-    const postId = parsePostId(editPostInput)
-    if (!postId) { setEditPostError('Enter a valid post URL or ID'); setEditPostInfo(null); return }
-    if (!token) { setEditPostError('CivitAI API key required'); return }
-    setEditPostLoading(true)
-    setEditPostError('')
-    setEditPostInfo(null)
+  const addManualResource = useCallback(async () => {
+    if (!resourceInput.trim()) return
+    setResourceLoading(true)
+    setResourceError('')
     try {
-      const res = await fetch(POST_INFO_ENDPOINT, {
+      const res = await fetch(RESOLVE_RESOURCE_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, post_id: postId }),
+        body: JSON.stringify({ input: resourceInput.trim() }),
       })
       const data = await res.json()
-      if (!data.ok) { setEditPostError(data.error || 'Failed to fetch post'); return }
-      const post = data.post as PostInfo
-      if (!post.is_showcase) { setEditPostError('Not a showcase post (no model version linked)'); return }
-      setEditPostInfo(post)
+      if (!data.ok) {
+        setResourceError(data.error || 'Failed to resolve resource')
+        return
+      }
+      const r = data.resource as ManualResource
+      if (manualResources.some((x) => x.modelVersionId === r.modelVersionId)) {
+        setResourceError('Already added')
+        return
+      }
+      setManualResources([...manualResources, r])
+      setResourceInput('')
     } catch (e) {
-      setEditPostError(e instanceof Error ? e.message : String(e))
+      setResourceError(e instanceof Error ? e.message : String(e))
     } finally {
-      setEditPostLoading(false)
+      setResourceLoading(false)
     }
-  }, [editPostInput, token])
+  }, [resourceInput, manualResources, setManualResources])
+
+  const removeManualResource = useCallback((modelVersionId: number) => {
+    setManualResources(manualResources.filter((r) => r.modelVersionId !== modelVersionId))
+  }, [manualResources, setManualResources])
 
   const handleDragEnter = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounterRef.current++; if (dragCounterRef.current === 1) setIsDragging(true) }, [])
   const handleDragLeave = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounterRef.current--; if (dragCounterRef.current === 0) setIsDragging(false) }, [])
   const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation() }, [])
   const handleDrop = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounterRef.current = 0; setIsDragging(false); addFiles(Array.from(e.dataTransfer.files)) }, [addFiles])
 
-  // Collect media URLs and metadata shared by both paths
   const collectMedia = (freshInputs: Record<string, unknown>) => {
     const freshVideoUrls = toMediaUrls(freshInputs.video)
     const freshImageUrls = toMediaUrls(freshInputs.image)
@@ -255,10 +281,80 @@ function CivitAIShareBlock({
     return { jobMeta, freshMeta, shareMeta }
   }
 
+  // Resolve every detected hash to a CivitAI name in one batched request.
+  // 404s come back as resolved=false so the gate can render 'Unknown'.
+  const buildResolvedRows = async (
+    shareMeta: Record<string, unknown>,
+  ): Promise<ResolvedRow[]> => {
+    const modelHashes = (shareMeta.model_hashes || {}) as Record<string, { sha256?: string; strength?: number }>
+    const loraHashes = (shareMeta.lora_hashes || {}) as Record<string, string>
+    const loras = (shareMeta.loras || []) as Array<{ name: string; strength?: number }>
+
+    const requests: Array<{ filename: string; sha256: string; strength?: number; isCheckpoint: boolean }> = []
+    for (const [filename, info] of Object.entries(modelHashes)) {
+      if (!info?.sha256) continue
+      requests.push({
+        filename,
+        sha256: info.sha256,
+        strength: info.strength,
+        isCheckpoint: info.strength === undefined || info.strength === null,
+      })
+    }
+    if (requests.length === 0) {
+      for (const [filename, sha] of Object.entries(loraHashes)) {
+        const matched = loras.find((l) => l.name === filename)
+        requests.push({ filename, sha256: sha, strength: matched?.strength ?? 1.0, isCheckpoint: false })
+      }
+    }
+
+    if (requests.length === 0) return []
+
+    const res = await fetch(RESOLVE_HASHES_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hashes: requests.map((r) => ({ filename: r.filename, sha256: r.sha256 })) }),
+    })
+    const data = await res.json()
+    if (!data.ok) throw new Error(data.error || 'resolve-hashes failed')
+    const rows = data.resolved as Array<Omit<ResolvedRow, 'strength' | 'isCheckpoint'>>
+    return rows.map((row, i) => ({
+      ...row,
+      strength: requests[i].strength,
+      isCheckpoint: requests[i].isCheckpoint,
+    }))
+  }
+
+  // Promise-based HITL gate: render the panel and await the user's decision.
+  const awaitApproval = (
+    resolved: ResolvedRow[],
+    mediaCount: number,
+    promptPreview: string,
+    tagList: string[],
+  ): Promise<{ approve: boolean; nsfw: boolean }> => {
+    return new Promise((resolve) => {
+      setApproval({
+        resolved,
+        manualResources,
+        mediaCount,
+        promptPreview,
+        tags: tagList,
+        resolve,
+      })
+    })
+  }
+
   useEffect(() => {
     registerExecute(async (freshInputs) => {
       const freshMedia = collectMedia(freshInputs)
-      if (freshMedia.length === 0) throw new Error('No media input to share')
+      if (freshMedia.length === 0) {
+        // Diagnose: distinguish wired-but-empty from no-upstream-at-all so
+        // the user knows whether the upstream block failed to emit or
+        // whether no producer is connected.
+        const wired = freshInputs.image !== undefined || freshInputs.video !== undefined
+        throw new Error(wired
+          ? 'Upstream produced no usable media URLs — check that the upstream block actually emits to its image/video output port'
+          : 'No media input — load files manually or connect a producer upstream')
+      }
       if (!token) throw new Error('CivitAI API key not set')
 
       setExecutionStatus?.('running')
@@ -269,72 +365,63 @@ function CivitAIShareBlock({
 
       if (!jobMeta.model_hashes && !jobMeta.lora_hashes) {
         const scanned = freshMedia.length
-        const msg = `No model hashes found in any of the ${scanned} file${scanned === 1 ? '' : 's'}. This usually means the ComfyUI worker didn't return hashes for these jobs. Try selecting images that have model_hashes in their metadata (check with Image Inspector).`
+        const msg = `No model hashes found in any of the ${scanned} file${scanned === 1 ? '' : 's'}. ComfyUI worker didn't return hashes for these jobs. Try files with model_hashes in metadata (check with Image Inspector).`
         setStatus(msg); setStatusMessage(msg); setExecutionStatus?.('error', msg)
         throw new Error(msg)
       }
 
-      if (mode === 'edit') {
-        // --- EDIT MODE: add images to existing post ---
-        const postId = parsePostId(editPostInput)
-        if (!postId) throw new Error('No post ID set')
-        if (!editPostInfo?.is_showcase) throw new Error('Not a validated showcase post')
+      setStatusMessage('Resolving resources...')
+      setStatus('Resolving resources...')
+      const resolved = await buildResolvedRows(shareMeta)
 
-        setStatusMessage(`Adding ${freshMedia.length} file${freshMedia.length === 1 ? '' : 's'} to post...`)
-        setStatus(`Uploading to post ${postId}...`)
+      const tagList = tags.split(',').map((t) => t.trim()).filter(Boolean)
+      const promptPreview = (shareMeta.prompt as string) || ''
 
-        try {
-          const res = await fetch(ADD_TO_POST_ENDPOINT, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token, post_id: postId, media_urls: freshMedia, meta: shareMeta }),
-          })
-          const data = await res.json()
-          if (data.ok) {
-            const msg = `Added ${data.added_count} file${data.added_count === 1 ? '' : 's'} (${data.total_count} total)`
-            setStatus(`${msg} - ${data.post_url}`)
-            setStatusMessage(msg)
-            setExecutionStatus?.('completed')
-          } else {
-            throw new Error(data.error || 'Add to post failed')
-          }
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e)
-          setStatus(`Failed: ${msg}`); setStatusMessage(msg); setExecutionStatus?.('error', msg)
-          throw e instanceof Error ? e : new Error(msg)
+      setStatusMessage('Awaiting approval...')
+      setStatus('Awaiting approval...')
+      const decision = await awaitApproval(resolved, freshMedia.length, promptPreview, tagList)
+      setApproval(null)
+
+      if (!decision.approve) {
+        const msg = 'Cancelled by user'
+        setStatus(msg); setStatusMessage(msg); setExecutionStatus?.('error', msg)
+        throw new Error(msg)
+      }
+
+      const description = `Generated with comfy-gen (https://github.com/Hearmeman24/comfy-gen) and BlockFlow (https://github.com/Hearmeman24/BlockFlow) — open-source tools for running ComfyUI workflows on serverless GPUs.`
+
+      setStatusMessage(`Sharing ${freshMedia.length} file${freshMedia.length === 1 ? '' : 's'}...`)
+      setStatus(`Uploading ${freshMedia.length} file${freshMedia.length === 1 ? '' : 's'}...`)
+
+      try {
+        const res = await fetch(SHARE_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token,
+            media_urls: freshMedia,
+            title: title || `${freshMeta.task_type || 'Generation'} ${new Date().toLocaleDateString()}`,
+            description,
+            tags: tagList,
+            nsfw: decision.nsfw,
+            publish: true,
+            meta: shareMeta,
+            manual_resources: manualResources,
+          }),
+        })
+        const data = await res.json()
+        if (data.ok) {
+          const msg = `Shared ${data.image_count} file${data.image_count === 1 ? '' : 's'}`
+          setStatus(`${msg} - ${data.post_url}`)
+          setStatusMessage(msg)
+          setExecutionStatus?.('completed')
+        } else {
+          throw new Error(data.error || 'Share failed')
         }
-      } else {
-        // --- NEW POST MODE ---
-        const tagList = tags.split(',').map((t) => t.trim()).filter(Boolean)
-        const description = `Generated with comfy-gen (https://github.com/Hearmeman24/comfy-gen) and BlockFlow (https://github.com/Hearmeman24/BlockFlow) — open-source tools for running ComfyUI workflows on serverless GPUs.`
-
-        setStatusMessage(`Sharing ${freshMedia.length} file${freshMedia.length === 1 ? '' : 's'}...`)
-        setStatus(`Uploading ${freshMedia.length} file${freshMedia.length === 1 ? '' : 's'}...`)
-
-        try {
-          const res = await fetch(SHARE_ENDPOINT, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              token, media_urls: freshMedia,
-              title: title || `${freshMeta.task_type || 'Generation'} ${new Date().toLocaleDateString()}`,
-              description, tags: tagList, nsfw, publish, meta: shareMeta,
-            }),
-          })
-          const data = await res.json()
-          if (data.ok) {
-            const msg = `Shared ${data.image_count} file${data.image_count === 1 ? '' : 's'}`
-            setStatus(`${msg} - ${data.post_url}`)
-            setStatusMessage(msg)
-            setExecutionStatus?.('completed')
-          } else {
-            throw new Error(data.error || 'Share failed')
-          }
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e)
-          setStatus(`Failed: ${msg}`); setStatusMessage(msg); setExecutionStatus?.('error', msg)
-          throw e instanceof Error ? e : new Error(msg)
-        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        setStatus(`Failed: ${msg}`); setStatusMessage(msg); setExecutionStatus?.('error', msg)
+        throw e instanceof Error ? e : new Error(msg)
       }
       return undefined
     })
@@ -342,6 +429,26 @@ function CivitAIShareBlock({
 
   return (
     <div className="space-y-3">
+      {/* Upstream status badge — always visible so it's obvious whether the
+          wired upstream actually produced media. */}
+      <div className={`rounded-md border px-2 py-1 ${
+        upstreamMediaKind
+          ? 'border-emerald-500/40 bg-emerald-500/5'
+          : upstreamHasAnyData
+            ? 'border-yellow-500/40 bg-yellow-500/5'
+            : 'border-border/40 bg-muted/10'
+      }`}>
+        <p className="text-[11px]">
+          {upstreamMediaKind ? (
+            <span className="text-emerald-400">✓ Upstream: {upstreamMediaKind}</span>
+          ) : upstreamHasAnyData ? (
+            <span className="text-yellow-500">⚠ Upstream connected, no media (only non-image data emitted)</span>
+          ) : (
+            <span className="text-muted-foreground">No upstream media — load files below or wire a producer</span>
+          )}
+        </p>
+      </div>
+
       {/* Local file upload area */}
       {localFiles.length === 0 && upstreamUrls.length === 0 ? (
         <div
@@ -357,7 +464,7 @@ function CivitAIShareBlock({
             <Button type="button" variant="outline" size="sm" className="h-7 px-3 text-xs" onClick={() => openFilePicker()}>
               Load Media
             </Button>
-            <p className="text-[9px] text-muted-foreground">or drag &amp; drop - or connect upstream</p>
+            <p className="text-[9px] text-muted-foreground">or drag &amp; drop</p>
           </div>
         </div>
       ) : localFiles.length > 0 ? (
@@ -380,28 +487,6 @@ function CivitAIShareBlock({
         </div>
       ) : null}
 
-      {/* Mode toggle */}
-      <div className="flex items-center gap-1 rounded-md border border-border/60 p-0.5">
-        <button
-          type="button"
-          className={`flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-            mode === 'new' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
-          }`}
-          onClick={() => setMode('new')}
-        >
-          New Post
-        </button>
-        <button
-          type="button"
-          className={`flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-            mode === 'edit' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
-          }`}
-          onClick={() => setMode('edit')}
-        >
-          Edit Post
-        </button>
-      </div>
-
       {!token && (
         <span className="text-xs text-yellow-500">CIVITAI_API_KEY missing - configure it in your .env file or enter below</span>
       )}
@@ -416,107 +501,93 @@ function CivitAIShareBlock({
         />
       </div>
 
-      {mode === 'edit' ? (
-        /* --- EDIT MODE UI --- */
-        <div className="space-y-2">
-          <div className="space-y-1">
-            <Label className="text-xs">Post URL or ID</Label>
-            <div className="flex gap-1">
-              <Input
-                value={editPostInput}
-                onChange={(e) => { setEditPostInput(e.target.value); setEditPostInfo(null); setEditPostError('') }}
-                placeholder="https://civitai.com/posts/12345 or 12345"
-                className="h-8 text-xs flex-1"
-              />
-              <Button
-                type="button" variant="outline" size="sm" className="h-8 px-2 text-xs"
-                disabled={editPostLoading || !editPostInput.trim()}
-                onClick={validatePost}
-              >
-                {editPostLoading ? '...' : 'Validate'}
-              </Button>
-            </div>
-          </div>
-          {editPostError && (
-            <p className="text-[10px] text-red-400">{editPostError}</p>
-          )}
-          {editPostInfo && (
-            <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 space-y-0.5">
-              <p className="text-[11px] font-medium text-emerald-400">Showcase post validated</p>
-              <p className="text-[10px] text-muted-foreground">{editPostInfo.title || 'Untitled'}</p>
-              <p className="text-[10px] text-muted-foreground">{editPostInfo.image_count} existing image{editPostInfo.image_count === 1 ? '' : 's'}</p>
-            </div>
+      <div className="space-y-1">
+        <Label className="text-xs">Post Title</Label>
+        <Input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Auto-generated if empty"
+          className="h-8 text-xs"
+        />
+      </div>
+
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">Tags</Label>
+          {mediaUrls.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+              disabled={tagging}
+              onClick={async () => {
+                setTagging(true)
+                try {
+                  const res = await fetch(AUTO_TAGS_ENDPOINT, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      media_url: mediaUrls[0],
+                      model: meta.model || '',
+                      loras: meta.loras || [],
+                    }),
+                  })
+                  const data = await res.json()
+                  if (data.ok && data.tags) setTags(data.tags.join(', '))
+                } catch { /* silent */ } finally {
+                  setTagging(false)
+                }
+              }}
+            >
+              {tagging ? 'Generating...' : 'Auto-tag'}
+            </Button>
           )}
         </div>
-      ) : (
-        /* --- NEW POST UI --- */
-        <>
-          <div className="space-y-1">
-            <Label className="text-xs">Post Title</Label>
-            <Input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Auto-generated if empty"
-              className="h-8 text-xs"
-            />
-          </div>
+        <Input
+          value={tags}
+          onChange={(e) => setTags(e.target.value)}
+          placeholder="tag1, tag2, tag3"
+          className="h-8 text-xs"
+        />
+      </div>
 
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <Label className="text-xs">Tags</Label>
-              {mediaUrls.length > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-5 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
-                  disabled={tagging}
-                  onClick={async () => {
-                    setTagging(true)
-                    try {
-                      const res = await fetch(AUTO_TAGS_ENDPOINT, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          media_url: mediaUrls[0],
-                          model: meta.model || '',
-                          loras: meta.loras || [],
-                        }),
-                      })
-                      const data = await res.json()
-                      if (data.ok && data.tags) {
-                        setTags(data.tags.join(', '))
-                      }
-                    } catch {
-                      // Silent fail
-                    } finally {
-                      setTagging(false)
-                    }
-                  }}
+      {/* Manual resource links */}
+      <div className="space-y-1">
+        <Label className="text-xs">Linked resources (optional)</Label>
+        <div className="flex gap-1">
+          <Input
+            value={resourceInput}
+            onChange={(e) => { setResourceInput(e.target.value); setResourceError('') }}
+            placeholder="civitai.com/models/12345 or version ID"
+            className="h-8 text-xs flex-1"
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addManualResource() } }}
+          />
+          <Button
+            type="button" variant="outline" size="sm" className="h-8 px-2 text-xs"
+            disabled={resourceLoading || !resourceInput.trim()}
+            onClick={addManualResource}
+          >
+            {resourceLoading ? '...' : 'Add'}
+          </Button>
+        </div>
+        {resourceError && <p className="text-[10px] text-red-400">{resourceError}</p>}
+        {manualResources.length > 0 && (
+          <div className="space-y-0.5">
+            {manualResources.map((r) => (
+              <div key={r.modelVersionId} className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5">
+                <span className="text-[10px] text-muted-foreground truncate">{r.name || `v${r.modelVersionId}`}</span>
+                <button
+                  type="button"
+                  className="text-[10px] text-red-400 hover:text-red-300 ml-2"
+                  onClick={() => removeManualResource(r.modelVersionId)}
                 >
-                  {tagging ? 'Generating...' : 'Auto-tag'}
-                </Button>
-              )}
-            </div>
-            <Input
-              value={tags}
-              onChange={(e) => setTags(e.target.value)}
-              placeholder="tag1, tag2, tag3"
-              className="h-8 text-xs"
-            />
+                  ✕
+                </button>
+              </div>
+            ))}
           </div>
-
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <Switch checked={nsfw} onCheckedChange={setNsfw} />
-              <Label className="text-xs">NSFW</Label>
-            </div>
-            <div className="flex items-center gap-2">
-              <Switch checked={publish} onCheckedChange={setPublish} />
-              <Label className="text-xs">Auto-publish</Label>
-            </div>
-          </div>
-        </>
-      )}
+        )}
+      </div>
 
       {mediaUrls.length > 0 && !localFiles.length && (
         <p className="text-[10px] text-muted-foreground">
@@ -530,11 +601,72 @@ function CivitAIShareBlock({
         </p>
       )}
 
+      {/* HITL approval gate */}
+      {approval && (
+        <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
+          <p className="text-[11px] font-medium text-amber-400">Review before posting</p>
+          <div className="space-y-1">
+            <p className="text-[10px] text-muted-foreground">{approval.mediaCount} media file{approval.mediaCount === 1 ? '' : 's'}</p>
+            {approval.promptPreview && (
+              <p className="text-[10px] text-muted-foreground line-clamp-2">&quot;{approval.promptPreview}&quot;</p>
+            )}
+            {approval.tags.length > 0 && (
+              <p className="text-[10px] text-muted-foreground">Tags: {approval.tags.join(', ')}</p>
+            )}
+          </div>
+          <div className="space-y-0.5">
+            <p className="text-[10px] font-medium text-muted-foreground">Detected resources</p>
+            {approval.resolved.length === 0 ? (
+              <p className="text-[10px] text-muted-foreground italic">None detected</p>
+            ) : (
+              approval.resolved.map((r, i) => (
+                <div key={`${r.sha256}-${i}`} className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5">
+                  <span className={`text-[10px] ${r.resolved ? 'text-foreground' : 'text-yellow-500 italic'}`}>
+                    {r.resolved ? r.name : `${r.filename} — Unknown, not on CivitAI`}
+                  </span>
+                  <span className="text-[9px] text-muted-foreground ml-2">
+                    {r.isCheckpoint ? 'checkpoint' : r.strength !== undefined ? `lora @ ${r.strength}` : 'lora'}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+          {approval.manualResources.length > 0 && (
+            <div className="space-y-0.5">
+              <p className="text-[10px] font-medium text-muted-foreground">Manual links</p>
+              {approval.manualResources.map((r) => (
+                <div key={r.modelVersionId} className="rounded border border-border/40 px-1.5 py-0.5">
+                  <span className="text-[10px]">{r.name || `v${r.modelVersionId}`}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2 pt-1">
+            <Switch checked={gateNsfw} onCheckedChange={setGateNsfw} />
+            <Label className="text-[11px]">NSFW</Label>
+          </div>
+          <div className="flex gap-1.5 pt-1">
+            <Button
+              type="button" size="sm" className="h-7 flex-1 text-xs"
+              onClick={() => approval.resolve({ approve: true, nsfw: gateNsfw })}
+            >
+              Approve &amp; Publish
+            </Button>
+            <Button
+              type="button" variant="outline" size="sm" className="h-7 flex-1 text-xs"
+              onClick={() => approval.resolve({ approve: false, nsfw: gateNsfw })}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
       {status && status !== 'Ready' && (
         <p className="text-[11px] text-muted-foreground">
           {status.split(/(https?:\/\/\S+)/g).map((part, i) =>
             /^https?:\/\//.test(part) ? (
-              // eslint-disable-next-line react/no-array-index-key -- split fragments are positional, no stable id
+              // eslint-disable-next-line react/no-array-index-key -- split fragments are positional
               <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="underline text-blue-400 hover:text-blue-300">{part}</a>
             ) : part
           )}
@@ -547,7 +679,7 @@ function CivitAIShareBlock({
 export const blockDef: BlockDef = {
   type: 'civitaiShare',
   label: 'CivitAI Share',
-  description: 'Share generated media to CivitAI with metadata',
+  description: 'Share generated media to CivitAI with HITL approval gate',
   advanced: true,
   size: 'lg',
   canStart: true,
@@ -558,7 +690,7 @@ export const blockDef: BlockDef = {
     { name: 'prompt', kind: PORT_TEXT, required: false },
   ],
   outputs: [],
-  configKeys: ['mode', 'title', 'tags', 'nsfw', 'publish', 'edit_post_input'],
+  configKeys: ['title', 'tags', 'manual_resources'],
   component: CivitAIShareBlock,
 }
 
