@@ -113,6 +113,15 @@ function VideoLoaderBlock({
     })
   })
 
+  // Edit-time emit: surface the loaded video URL to downstream blocks before
+  // the pipeline runs so reference counters (Seedance, Multimodal Prompt
+  // Writer, etc.) update as soon as a file is loaded. Mirrors the same
+  // edit-time emit upload_image_to_tmpfiles does.
+  useEffect(() => {
+    if (uploadedVideoUrl) setOutput('video', [uploadedVideoUrl])
+    else setOutput('video', undefined)
+  }, [uploadedVideoUrl, setOutput])
+
   const openFilePicker = async () => {
     const files = await pickFiles({ slug: 'video_loader', accept: 'video/*', description: 'Videos' })
     const file = files?.[0] ?? null

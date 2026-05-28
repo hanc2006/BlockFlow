@@ -411,7 +411,7 @@ function MultimodalPromptWriterBlock({
           value={userPrompt}
           onChange={(e) => setUserPrompt(e.target.value)}
           placeholder="e.g. 'a smartphone-candid shot of the subject from @image1 in the setting of @image2…'"
-          className="min-h-[60px] text-[11px]"
+          className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto text-[11px]"
         />
         {upstreamText && (
           <p className="text-[10px] text-muted-foreground italic line-clamp-2">
@@ -434,7 +434,7 @@ function MultimodalPromptWriterBlock({
           <Textarea
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
-            className="min-h-[100px] text-[11px] font-mono mt-1"
+            className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto text-[11px] font-mono mt-1"
           />
         </CollapsibleContent>
       </Collapsible>
