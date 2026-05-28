@@ -162,6 +162,67 @@ describe('extractShareableArtifact', () => {
     expect(out?.blockLabel).toBe('Upscale')
   })
 
+  it('prefers a block that emits BOTH media + metadata over a forwarder that only re-emits media', () => {
+    // Real-world layout from the user's report: ComfyUI Gen → Image Viewer
+    // → CivitAI Share. Image Viewer declares an `image` output and the
+    // pipeline runner auto-forwards its inputs.image to outputs.image, so
+    // its saved outputs include the image URL. But Image Viewer never
+    // forwards `metadata` (no rule for it), so its outputs.metadata is
+    // absent. Picking Image Viewer as primary leaves us with the URL but
+    // no model_hashes — the gate can't link any resource.
+    //
+    // The right primary is ComfyUI Gen: it has both the same URL AND the
+    // full per-image metadata with sha256 hashes. We pick the latest
+    // block that has BOTH.
+    const meta = {
+      prompt: 'p',
+      model_hashes: { 'a.safetensors': { sha256: 'aa' } },
+    }
+    const run = makeRun([
+      {
+        block_index: 0,
+        block_type: 'comfy_gen',
+        block_label: 'ComfyUI Gen',
+        status: 'completed',
+        outputs: {
+          image: { kind: 'image', value: '/outputs/x.png' },
+          metadata: { kind: 'metadata', value: meta },
+        },
+      },
+      {
+        block_index: 1,
+        block_type: 'image_viewer',
+        block_label: 'Image Viewer',
+        status: 'completed',
+        outputs: {
+          // Auto-forwarded by pipeline-context: same URL, no metadata.
+          image: { kind: 'image', value: '/outputs/x.png' },
+        },
+      },
+    ])
+    const out = extractShareableArtifact(run)
+    expect(out?.blockLabel).toBe('ComfyUI Gen')
+    expect(out?.metadata[0]?.model_hashes).toEqual({ 'a.safetensors': { sha256: 'aa' } })
+  })
+
+  it('falls back to a media-only block when no candidate has metadata', () => {
+    // If literally no block emitted metadata (e.g. external Upload Image),
+    // we still want the modal to render with the image so the user can
+    // submit it as a raw upload. Just no resource links.
+    const run = makeRun([
+      {
+        block_index: 0,
+        block_type: 'image_viewer',
+        block_label: 'Image Viewer',
+        status: 'completed',
+        outputs: { image: { kind: 'image', value: '/outputs/x.png' } },
+      },
+    ])
+    const out = extractShareableArtifact(run)
+    expect(out?.blockLabel).toBe('Image Viewer')
+    expect(out?.urls).toEqual(['/outputs/x.png'])
+  })
+
   it('skips a block whose image output is empty/missing', () => {
     const run = makeRun([
       {
