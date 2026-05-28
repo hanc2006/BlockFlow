@@ -82,28 +82,57 @@ const PRIORITY_KINDS = ['video', 'image'] as const
  * Find the primary shareable block — the closest-to-end block emitting an
  * image or video output. Returns null when no such block exists (e.g. a
  * LoRA-train-only run has nothing shareable to CivitAI here).
+ *
+ * Selection rule (two-pass): prefer the latest block that emits BOTH media
+ * AND metadata. Image Viewer / Video Viewer forward the media URL via
+ * pipeline `forwards` rules but DON'T forward metadata, so they end up
+ * with media-only outputs that shadow the upstream gen block. If we
+ * picked them as primary, the modal would see the URL but no
+ * model_hashes — exactly the failure the user reported. Only when no
+ * block has metadata do we fall back to the closest media-only block
+ * (e.g. an Upload Image-only run with no gen at all).
  */
 export function extractShareableArtifact(run: RunEntry): ShareableArtifact | null {
-  // Walk block_results last → first. Video wins over image (matches the
-  // pipeline's "video supersedes image" precedence elsewhere).
   for (const kind of PRIORITY_KINDS) {
+    // First pass: latest block that emits both media and metadata.
     for (let i = run.block_results.length - 1; i >= 0; i--) {
-      const br = run.block_results[i]
-      const mediaPort = findMediaPort(br, kind)
-      if (!mediaPort) continue
-      const urls = normalizeStringList(mediaPort.value)
-      if (urls.length === 0) continue
-      const metaPort = br.outputs.metadata
-      const metadata = normalizeMetadataList(metaPort?.value, urls.length)
-      return {
-        blockLabel: br.block_label,
-        kind,
-        urls,
-        metadata,
-      }
+      const candidate = tryExtractFromBlock(run.block_results[i], kind, true)
+      if (candidate) return candidate
+    }
+    // Second pass: latest block that emits media at all (no metadata
+    // requirement). Used as a fallback for runs that legitimately have no
+    // generation metadata anywhere.
+    for (let i = run.block_results.length - 1; i >= 0; i--) {
+      const candidate = tryExtractFromBlock(run.block_results[i], kind, false)
+      if (candidate) return candidate
     }
   }
   return null
+}
+
+function tryExtractFromBlock(
+  br: BlockResult,
+  kind: 'image' | 'video',
+  requireMetadata: boolean,
+): ShareableArtifact | null {
+  const mediaPort = findMediaPort(br, kind)
+  if (!mediaPort) return null
+  const urls = normalizeStringList(mediaPort.value)
+  if (urls.length === 0) return null
+  const metaPort = br.outputs.metadata
+  if (requireMetadata) {
+    // Metadata must exist AND have content. Empty object / array counts as
+    // "no metadata" so a downstream forwarder isn't accidentally picked.
+    if (!metaPort) return null
+    const v = metaPort.value
+    const empty =
+      v == null ||
+      (Array.isArray(v) && v.length === 0) ||
+      (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0)
+    if (empty) return null
+  }
+  const metadata = normalizeMetadataList(metaPort?.value, urls.length)
+  return { blockLabel: br.block_label, kind, urls, metadata }
 }
 
 function findMediaPort(br: BlockResult, kind: 'image' | 'video') {
