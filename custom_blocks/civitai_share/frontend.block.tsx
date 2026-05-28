@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { useSessionState } from '@/lib/use-session-state'
+import { ApprovalGate } from '@/components/civitai/approval-gate'
+import { BLOCKFLOW_DESCRIPTION } from '@/components/civitai/constants'
 import { pickFiles } from '@/lib/file-picker'
 import {
   PORT_IMAGE,
@@ -397,7 +398,7 @@ function CivitAIShareBlock({
         throw new Error(msg)
       }
 
-      const description = `Generated with comfy-gen (https://github.com/Hearmeman24/comfy-gen) and BlockFlow (https://github.com/Hearmeman24/BlockFlow) — open-source tools for running ComfyUI workflows on serverless GPUs.`
+      const description = BLOCKFLOW_DESCRIPTION
 
       setStatusMessage(`Sharing ${freshMedia.length} file${freshMedia.length === 1 ? '' : 's'}...`)
       setStatus(`Uploading ${freshMedia.length} file${freshMedia.length === 1 ? '' : 's'}...`)
@@ -622,91 +623,17 @@ function CivitAIShareBlock({
 
       {/* HITL approval gate */}
       {approval && (
-        <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
-          <p className="text-[11px] font-medium text-amber-400">Review before posting</p>
-          <div className="space-y-1">
-            <p className="text-[10px] text-muted-foreground">{approval.mediaCount} media file{approval.mediaCount === 1 ? '' : 's'}</p>
-            {approval.promptPreview && (
-              <p className="text-[10px] text-muted-foreground line-clamp-2">&quot;{approval.promptPreview}&quot;</p>
-            )}
-            {approval.tags.length > 0 && (
-              <p className="text-[10px] text-muted-foreground">Tags: {approval.tags.join(', ')}</p>
-            )}
-          </div>
-          <div className="space-y-0.5">
-            <p className="text-[10px] font-medium text-muted-foreground">Detected resources</p>
-            {approval.resolved.length === 0 ? (
-              <p className="text-[10px] text-muted-foreground italic">None detected</p>
-            ) : (
-              approval.resolved.map((r, i) => {
-                // CivitAI types: "Checkpoint", "LORA", "LoCon", "Workflows",
-                // "TextualInversion", "Hypernetwork", "AestheticGradient",
-                // "Controlnet", "Poses", "VAE", etc. Render as-is; append
-                // strength for LoRA-family entries since users care about it.
-                const baseType = (r.type || '').toLowerCase()
-                const isLoraFamily = baseType === 'lora' || baseType === 'locon' || baseType === 'lycoris'
-                const typeLabel = r.type
-                  ? (isLoraFamily && r.strength !== undefined ? `${r.type} @ ${r.strength}` : r.type)
-                  : (r.strength !== undefined ? `lora @ ${r.strength}` : '—')
-                return (
-                  <div key={`${r.sha256}-${i}`} className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5">
-                    <span className={`text-[10px] flex-1 min-w-0 truncate ${r.resolved ? 'text-foreground' : 'text-yellow-500 italic'}`}>
-                      {r.resolved ? (
-                        <>
-                          {r.name}
-                          {r.versionName && r.versionName !== r.name && (
-                            <span className="text-muted-foreground"> ({r.versionName})</span>
-                          )}
-                        </>
-                      ) : (
-                        `${r.filename} — Unknown, not on CivitAI`
-                      )}
-                    </span>
-                    <span className="text-[9px] text-muted-foreground ml-2 shrink-0">
-                      {typeLabel}
-                    </span>
-                  </div>
-                )
-              })
-            )}
-          </div>
-          {approval.manualResources.length > 0 && (
-            <div className="space-y-0.5">
-              <p className="text-[10px] font-medium text-muted-foreground">Manual links</p>
-              {approval.manualResources.map((r) => (
-                <div key={r.modelVersionId} className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5">
-                  <span className="text-[10px] flex-1 min-w-0 truncate">
-                    {r.name || `v${r.modelVersionId}`}
-                    {r.versionName && r.versionName !== r.name && (
-                      <span className="text-muted-foreground"> ({r.versionName})</span>
-                    )}
-                  </span>
-                  {r.type && (
-                    <span className="text-[9px] text-muted-foreground ml-2 shrink-0">{r.type}</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="flex items-center gap-2 pt-1">
-            <Switch checked={gateNsfw} onCheckedChange={setGateNsfw} />
-            <Label className="text-[11px]">NSFW</Label>
-          </div>
-          <div className="flex gap-1.5 pt-1">
-            <Button
-              type="button" size="sm" className="h-7 flex-1 text-xs"
-              onClick={() => approval.resolve({ approve: true, nsfw: gateNsfw })}
-            >
-              Approve &amp; Publish
-            </Button>
-            <Button
-              type="button" variant="outline" size="sm" className="h-7 flex-1 text-xs"
-              onClick={() => approval.resolve({ approve: false, nsfw: gateNsfw })}
-            >
-              Cancel
-            </Button>
-          </div>
-        </div>
+        <ApprovalGate
+          resolved={approval.resolved}
+          manualResources={approval.manualResources}
+          mediaCount={approval.mediaCount}
+          promptPreview={approval.promptPreview}
+          tags={approval.tags}
+          nsfw={gateNsfw}
+          onNsfwChange={setGateNsfw}
+          onApprove={() => approval.resolve({ approve: true, nsfw: gateNsfw })}
+          onCancel={() => approval.resolve({ approve: false, nsfw: gateNsfw })}
+        />
       )}
 
       {status && status !== 'Ready' && (
