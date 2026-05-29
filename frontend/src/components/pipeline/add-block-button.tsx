@@ -26,15 +26,25 @@ function isSuggested(candidate: NodeTypeDef, upstreamType: string | undefined): 
   return false
 }
 
+/** Decorate addable types with a `suggested` flag and rank suggested entries first.
+ *  Stable: original relative order is preserved within each group. Shared between
+ *  the `AddBlockButton` dropdown and the keyboard-shortcut block picker. */
+export function orderedAddableTypes(
+  validTypes: NodeTypeDef[],
+  upstreamType: string | undefined,
+): Array<{ def: NodeTypeDef; suggested: boolean }> {
+  const decorated = validTypes.map((def) => ({ def, suggested: isSuggested(def, upstreamType) }))
+  return decorated.sort((a, b) => {
+    if (a.suggested === b.suggested) return 0
+    return a.suggested ? -1 : 1
+  })
+}
+
 export function AddBlockButton({ validTypes, onAdd, upstreamType }: AddBlockButtonProps) {
-  const ordered = useMemo(() => {
-    const decorated = validTypes.map((def) => ({ def, suggested: isSuggested(def, upstreamType) }))
-    // Suggested first, otherwise preserve original order
-    return decorated.sort((a, b) => {
-      if (a.suggested === b.suggested) return 0
-      return a.suggested ? -1 : 1
-    })
-  }, [validTypes, upstreamType])
+  const ordered = useMemo(
+    () => orderedAddableTypes(validTypes, upstreamType),
+    [validTypes, upstreamType],
+  )
 
   if (validTypes.length === 0) return null
 
