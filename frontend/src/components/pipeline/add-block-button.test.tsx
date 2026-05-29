@@ -8,7 +8,6 @@ function block(
   type: string,
   label: string,
   description: string,
-  suggestedUpstream: string[] = [],
 ): NodeTypeDef {
   return {
     type,
@@ -18,7 +17,6 @@ function block(
     canStart: true,
     inputs: [],
     outputs: [],
-    suggestedUpstream,
   }
 }
 
@@ -39,7 +37,7 @@ describe('AddBlockButton grouped picker', () => {
             'Upload one or more images saved locally and to a public URL for remote endpoints automatically.',
           ),
           block('datasetCaption', 'Dataset Caption', 'Auto-caption every image in a dataset via a vision LLM.'),
-          block('seedance', 'Seedance 2 (PiAPI)', 'ByteDance Seedance 2 via PiAPI.', ['uploadImageToTmpfiles']),
+          block('seedance', 'Seedance 2 (PiAPI)', 'ByteDance Seedance 2 via PiAPI.'),
         ]}
       />,
     )
@@ -64,6 +62,32 @@ describe('AddBlockButton grouped picker', () => {
 
     expect(within(menu).getByText('Seedance 2 (PiAPI)')).toBeInTheDocument()
     expect(within(menu).getByText('Suggested')).toBeInTheDocument()
+  })
+
+  it('renders starter suggestions for an empty pipeline picker', async () => {
+    const user = userEvent.setup()
+    render(
+      <AddBlockButton
+        suggestionContext={{ kind: 'starter' }}
+        onAdd={vi.fn()}
+        validTypes={[
+          block('seedance', 'Seedance 2 (PiAPI)', 'ByteDance Seedance 2 via PiAPI.'),
+          block('promptWriter', 'Prompt Writer (OpenRouter)', 'Generate an image or video prompt using an LLM.'),
+          block('videoLoader', 'Video Loader', 'Load a video file and pass it downstream.'),
+        ]}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: /add block/i }))
+    const menu = screen.getByRole('menu')
+
+    const headings = within(menu).getAllByTestId('block-picker-group-label')
+    expect(headings.map((heading) => heading.textContent)).toEqual(['Suggested'])
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'Video LoaderLoad a video file and pass it downstream.',
+      'Prompt Writer (OpenRouter)Generate an image or video prompt using an LLM.',
+      'Seedance 2 (PiAPI)ByteDance Seedance 2 via PiAPI.',
+    ])
   })
 
   it('filters visible block rows from the search field', async () => {

@@ -5,18 +5,25 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import type { BlockSuggestionContext } from '@/lib/pipeline/block-suggestions'
 import type { NodeTypeDef } from '@/lib/pipeline/registry'
 import { BlockPickerMenuContent } from './block-picker-menu'
 
 interface AddBlockButtonProps {
   validTypes: NodeTypeDef[]
   onAdd: (type: string) => void
-  /** Type of the immediately upstream block, if any. Used to surface
-   *  bidirectional "Suggested" hints from `suggestedUpstream`/`suggestedDownstream`. */
+  /** Type of the immediately upstream block, if any. Used to surface contextual Suggested hints. */
   upstreamType?: string
+  /** Explicit picker context for non-upstream cases, such as an empty starter pipeline. */
+  suggestionContext?: BlockSuggestionContext
 }
 
-export function AddBlockButton({ validTypes, onAdd, upstreamType }: AddBlockButtonProps) {
+export function AddBlockButton({
+  validTypes,
+  onAdd,
+  upstreamType,
+  suggestionContext,
+}: AddBlockButtonProps) {
   if (validTypes.length === 0) return null
 
   return (
@@ -34,7 +41,12 @@ export function AddBlockButton({ validTypes, onAdd, upstreamType }: AddBlockButt
             </svg>
           </Button>
         </DropdownMenuTrigger>
-        <BlockPickerMenuContent validTypes={validTypes} upstreamType={upstreamType} onSelect={onAdd} />
+        <BlockPickerMenuContent
+          validTypes={validTypes}
+          upstreamType={upstreamType}
+          suggestionContext={suggestionContext}
+          onSelect={onAdd}
+        />
       </DropdownMenu>
     </div>
   )

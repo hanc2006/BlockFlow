@@ -4,6 +4,7 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import type { BlockSuggestionContext } from '@/lib/pipeline/block-suggestions'
 import type { NodeTypeDef } from '@/lib/pipeline/registry'
 import { BlockPickerMenuContent } from './block-picker-menu'
 
@@ -32,10 +33,12 @@ export function InsertBlockConnector({
   validTypes,
   onInsert,
   upstreamType,
+  suggestionContext,
 }: {
   validTypes: NodeTypeDef[]
   onInsert: (type: string) => void
   upstreamType?: string
+  suggestionContext?: BlockSuggestionContext
 }) {
   if (validTypes.length === 0) {
     return <BlockConnector />
@@ -57,7 +60,12 @@ export function InsertBlockConnector({
               </svg>
             </button>
           </DropdownMenuTrigger>
-          <BlockPickerMenuContent validTypes={validTypes} upstreamType={upstreamType} onSelect={onInsert} />
+          <BlockPickerMenuContent
+            validTypes={validTypes}
+            upstreamType={upstreamType}
+            suggestionContext={suggestionContext}
+            onSelect={onInsert}
+          />
         </DropdownMenu>
       </div>
     </div>

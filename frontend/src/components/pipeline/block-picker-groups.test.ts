@@ -2,11 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { NodeTypeDef } from '@/lib/pipeline/registry'
 import { getBlockPickerGroups } from './block-picker-groups'
 
-function block(
-  type: string,
-  label = type,
-  options: { suggestedUpstream?: string[]; suggestedDownstream?: string[] } = {},
-): NodeTypeDef {
+function block(type: string, label = type): NodeTypeDef {
   return {
     type,
     label,
@@ -15,13 +11,11 @@ function block(
     canStart: true,
     inputs: [],
     outputs: [],
-    suggestedUpstream: options.suggestedUpstream,
-    suggestedDownstream: options.suggestedDownstream,
   }
 }
 
 describe('getBlockPickerGroups', () => {
-  it('pins Suggested first, then groups remaining blocks by domain category order', () => {
+  it('pins upstream Suggested first, then groups remaining blocks by domain category order', () => {
     const groups = getBlockPickerGroups(
       [
         block('elevenLabsTts', 'ElevenLabs'),
@@ -29,9 +23,9 @@ describe('getBlockPickerGroups', () => {
         block('promptWriter', 'Prompt Writer'),
         block('uploadImageToTmpfiles', 'Upload Image'),
         block('datasetCaption', 'Dataset Caption'),
-        block('seedance', 'Seedance', { suggestedUpstream: ['uploadImageToTmpfiles'] }),
+        block('seedance', 'Seedance'),
       ],
-      'uploadImageToTmpfiles',
+      { kind: 'upstream', upstreamType: 'uploadImageToTmpfiles' },
     )
 
     expect(groups.map((group) => group.label)).toEqual([
@@ -50,7 +44,25 @@ describe('getBlockPickerGroups', () => {
     expect(groups[5].items.map((item) => item.def.type)).toEqual(['elevenLabsTts'])
   })
 
-  it('keeps non-suggested blocks out of Suggested even when no upstream type exists', () => {
+  it('pins starter Suggested first when the picker has starter context', () => {
+    const groups = getBlockPickerGroups(
+      [
+        block('seedance', 'Seedance'),
+        block('promptWriter', 'Prompt Writer'),
+        block('videoLoader', 'Video Loader'),
+      ],
+      { kind: 'starter' },
+    )
+
+    expect(groups.map((group) => group.label)).toEqual(['Suggested'])
+    expect(groups[0].items.map((item) => item.def.type)).toEqual([
+      'videoLoader',
+      'promptWriter',
+      'seedance',
+    ])
+  })
+
+  it('keeps non-suggested blocks out of Suggested when no context exists', () => {
     const groups = getBlockPickerGroups([
       block('seedance', 'Seedance'),
       block('promptWriter', 'Prompt Writer'),

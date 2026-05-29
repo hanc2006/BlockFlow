@@ -16,6 +16,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
+import type { BlockSuggestionContext } from '@/lib/pipeline/block-suggestions'
 import type { NodeTypeDef } from '@/lib/pipeline/registry'
 import { getBlockPickerGroups, type BlockPickerGroup } from './block-picker-groups'
 
@@ -23,6 +24,7 @@ interface BlockPickerMenuContentProps {
   validTypes: NodeTypeDef[]
   onSelect: (type: string) => void
   upstreamType?: string
+  suggestionContext?: BlockSuggestionContext
 }
 
 const GROUP_ICONS: Record<BlockPickerGroup['key'], LucideIcon> = {
@@ -38,6 +40,7 @@ export function BlockPickerMenuContent({
   validTypes,
   onSelect,
   upstreamType,
+  suggestionContext,
 }: BlockPickerMenuContentProps) {
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLowerCase()
@@ -48,7 +51,8 @@ export function BlockPickerMenuContent({
       return haystack.includes(normalizedQuery)
     })
   }, [normalizedQuery, validTypes])
-  const groups = getBlockPickerGroups(filteredTypes, upstreamType)
+  const context = suggestionContext ?? (upstreamType ? { kind: 'upstream' as const, upstreamType } : undefined)
+  const groups = getBlockPickerGroups(filteredTypes, context)
 
   return (
     <DropdownMenuContent

@@ -4,9 +4,12 @@ import {
   PORT_TEXT,
   PORT_VIDEO,
   canonicalizePortKind,
-  getNodeType,
   type NodeTypeDef,
 } from '@/lib/pipeline/registry'
+import {
+  getSuggestedTypes,
+  type BlockSuggestionContext,
+} from '@/lib/pipeline/block-suggestions'
 
 export type BlockPickerCategory = 'image' | 'video' | 'prompts' | 'lora' | 'misc'
 
@@ -59,13 +62,6 @@ const CATEGORY_BY_TYPE: Record<string, BlockPickerCategory> = {
   hitl: 'misc',
 }
 
-function isSuggested(candidate: NodeTypeDef, upstreamType: string | undefined): boolean {
-  if (!upstreamType) return false
-  if (candidate.suggestedUpstream?.includes(upstreamType)) return true
-  const upstreamDef = getNodeType(upstreamType)
-  return upstreamDef?.suggestedDownstream?.includes(candidate.type) === true
-}
-
 function getFallbackCategory(def: NodeTypeDef): BlockPickerCategory {
   const outputKinds = new Set(def.outputs.map((port) => canonicalizePortKind(port.kind)))
   const inputKinds = new Set(def.inputs.map((port) => canonicalizePortKind(port.kind)))
@@ -82,11 +78,18 @@ export function getBlockPickerCategory(def: NodeTypeDef): BlockPickerCategory {
 
 export function getBlockPickerGroups(
   validTypes: NodeTypeDef[],
-  upstreamType?: string,
+  context?: BlockSuggestionContext,
 ): BlockPickerGroup[] {
-  const decorated = validTypes.map((def) => ({ def, suggested: isSuggested(def, upstreamType) }))
-  const suggested = decorated.filter((item) => item.suggested)
-  const regular = decorated.filter((item) => !item.suggested)
+  const validTypesById = new Map(validTypes.map((def) => [def.type, def]))
+  const suggestedTypeOrder = getSuggestedTypes(validTypes, context)
+  const suggestedTypes = new Set(suggestedTypeOrder)
+  const suggested = suggestedTypeOrder
+    .map((type) => validTypesById.get(type))
+    .filter((def): def is NodeTypeDef => Boolean(def))
+    .map((def) => ({ def, suggested: true }))
+  const regular = validTypes
+    .filter((def) => !suggestedTypes.has(def.type))
+    .map((def) => ({ def, suggested: false }))
 
   const groups: BlockPickerGroup[] = []
   if (suggested.length > 0) {
