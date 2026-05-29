@@ -47,7 +47,7 @@ ALLOWED_MODES = {"text_to_video", "first_last_frames", "omni_reference"}
 # *-preview-vip family — `mode`-less, 5/10/15 duration enum, 4 ARs only,
 #   non-real faces allowed (tightening), pre-submission moderation +
 #   refund on block. With `video_urls` set, output length = input video
-#   length and the `duration` field is ignored upstream.
+#   length when `duration` is sent as the upstream auto-length sentinel, 0.
 ALLOWED_TASK_TYPES = {
     "seedance-2",
     "seedance-2-fast",
@@ -93,14 +93,11 @@ def _headers(api_key: str) -> dict[str, str]:
 # PiAPI surfaces its internal retry mechanics + benign default notes in the
 # task `logs` array. We pass logs through to the block UI, but the user only
 # wants substantive outcome lines — the final failure already surfaces via the
-# job error/status. So drop: per-attempt retry markers, transient errors PiAPI
-# retried away (5xx), and the "invalid duration, use '5' as default" note we
-# deliberately trigger by omitting `duration` on VIP+video runs (output length
-# then equals the input video length per PiAPI's docs).
+# job error/status. So drop per-attempt retry markers and transient errors PiAPI
+# retried away (5xx); keep payload validation messages such as invalid duration.
 _LOG_NOISE_PATTERNS = (
     re.compile(r"\battempt\s+\d+\s+failed", re.I),
     re.compile(r"\bretrying\b", re.I),
-    re.compile(r"invalid duration", re.I),
     re.compile(r"internal server error status code", re.I),
 )
 
@@ -201,18 +198,19 @@ def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str,
             "aspect_ratio": aspect_ratio,
             "resolution": resolution,
         }
-        if images: payload["image_urls"] = images
-        if videos: payload["video_urls"] = videos
-        if audios: payload["audio_urls"] = audios
+        if images:
+            payload["image_urls"] = images
+        if videos:
+            payload["video_urls"] = videos
+        if audios:
+            payload["audio_urls"] = audios
 
-        # `duration` is meaningful ONLY without a video reference. When
-        # `video_urls` is present, PiAPI sets output length = input video
-        # length — but only if `duration` is OMITTED. Sending duration=5
-        # caps the output to 5s (a 9s input then renders just 5s). The PiAPI
-        # VIP video-reference example sends no duration; the completed VIP
-        # response echoes duration:0. So drop it (and skip enum validation,
-        # which is irrelevant) whenever a video reference is supplied.
-        if not videos:
+        # `duration` is user-controlled only without a video reference. With
+        # `video_urls`, PiAPI uses `duration: 0` as its auto-length sentinel;
+        # sending 5/10/15 or omitting the field can fall back to a 5s output.
+        if videos:
+            payload["duration"] = 0
+        else:
             duration_raw = body.get("duration", 5)
             try:
                 duration = int(duration_raw)
@@ -277,9 +275,12 @@ def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str,
         if aspect_ratio == "auto":
             aspect_ratio = "16:9"
         payload["aspect_ratio"] = aspect_ratio
-        if images: payload["image_urls"] = images
-        if videos: payload["video_urls"] = videos
-        if audios: payload["audio_urls"] = audios
+        if images:
+            payload["image_urls"] = images
+        if videos:
+            payload["video_urls"] = videos
+        if audios:
+            payload["audio_urls"] = audios
 
     return payload
 

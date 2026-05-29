@@ -2,11 +2,10 @@
 surfaced `remote_logs`.
 
 PiAPI's task `data.logs` is passed through to the block UI verbatim. It
-includes retry mechanics ("Attempt N failed, retrying"), transient errors it
-retried away (5xx), and a benign "invalid duration, use '5' as default" note
-that we trigger by intentionally omitting `duration` for VIP+video runs. The
-user wants only substantive outcome lines — the final failure already surfaces
-via the job error/status — so the noise is dropped.
+includes retry mechanics ("Attempt N failed, retrying") and transient errors it
+retried away (5xx). The user wants substantive outcome lines preserved; the
+final failure already surfaces via the job error/status, so only retry chatter
+is dropped.
 """
 from __future__ import annotations
 
@@ -26,7 +25,7 @@ sys.modules[_spec.name] = mod
 _spec.loader.exec_module(mod)
 
 
-def test_drops_retry_and_transient_and_invalid_duration_noise():
+def test_drops_retry_and_transient_noise_but_keeps_duration_errors():
     raw = [
         "invalid duration, use '5' as default",
         "internal server error status code: 503",
@@ -35,8 +34,8 @@ def test_drops_retry_and_transient_and_invalid_duration_noise():
         "Attempt 2 failed (content restriction), retrying.",
     ]
     out = mod._filter_upstream_logs(raw)
-    # Only the substantive content-restriction reason survives.
     assert out == [
+        "invalid duration, use '5' as default",
         "content restriction: The request was rejected because the input image may contain a real person. Please try different inputs.",
     ]
 
