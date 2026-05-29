@@ -3,8 +3,12 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { BookOpenIcon } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { AddPromptDialog, PromptPickerDropdown } from '@/components/prompt-library-dialog'
+import { usePromptLibrary } from '@/lib/use-prompt-library'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
 import { toPublicUrls } from '@/lib/image-ref'
@@ -56,6 +60,8 @@ function NanoBanana2Block({
   const [uploadError, setUploadError] = useState('')
   const dragCounter = useRef(0)
   const [isDragging, setIsDragging] = useState(false)
+  const { userPrompts, addPrompt, deletePrompt } = usePromptLibrary()
+  const [addDialogOpen, setAddDialogOpen] = useState(false)
 
   const upstreamRefs = Array.from(new Set(toPublicUrls(inputs.image)))
   const refUrls = Array.from(new Set([...upstreamRefs, ...localRefs]))
@@ -230,13 +236,35 @@ function NanoBanana2Block({
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label className="text-[11px]">Prompt</Label>
-          <button
-            type="button"
-            onClick={() => setUseUpstreamPrompt((v) => !v)}
-            className={`text-[10px] px-2 py-0.5 rounded transition-colors ${useUpstreamPrompt ? 'bg-primary text-primary-foreground' : 'border border-border/60 text-muted-foreground hover:text-foreground'}`}
-          >
-            upstream: {useUpstreamPrompt ? 'ON' : 'OFF'}
-          </button>
+          <div className="flex items-center gap-1">
+            {prompt.trim() && (
+              <button
+                type="button"
+                aria-label="Save prompt"
+                onClick={() => setAddDialogOpen(true)}
+                className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Save
+              </button>
+            )}
+            <PromptPickerDropdown
+              prompts={userPrompts}
+              onSelect={setPrompt}
+              onDelete={deletePrompt}
+              trigger={(
+                <Button type="button" variant="ghost" size="icon-xs" aria-label="Prompt presets">
+                  <BookOpenIcon className="size-3.5" />
+                </Button>
+              )}
+            />
+            <button
+              type="button"
+              onClick={() => setUseUpstreamPrompt((v) => !v)}
+              className={`text-[10px] px-2 py-0.5 rounded transition-colors ${useUpstreamPrompt ? 'bg-primary text-primary-foreground' : 'border border-border/60 text-muted-foreground hover:text-foreground'}`}
+            >
+              upstream: {useUpstreamPrompt ? 'ON' : 'OFF'}
+            </button>
+          </div>
         </div>
         <textarea
           aria-label="Prompt"
@@ -249,6 +277,15 @@ function NanoBanana2Block({
         {useUpstreamPrompt && upstreamPrompt && (
           <p className="text-[10px] text-muted-foreground italic line-clamp-2">Using upstream: {upstreamPrompt}</p>
         )}
+        <AddPromptDialog
+          open={addDialogOpen}
+          onOpenChange={setAddDialogOpen}
+          onSave={addPrompt}
+          onDelete={deletePrompt}
+          prompts={userPrompts}
+          defaultType="user"
+          defaultContent={prompt}
+        />
       </div>
 
       {/* References */}
@@ -342,8 +379,8 @@ function NanoBanana2Block({
 
 export const blockDef: BlockDef = {
   type: 'nanoBanana2',
-  label: 'Nano Banana 2 (single image)',
-  description: 'Single-image edit/generation via the Nano Banana 2 RunPod endpoint. Focused alternative to Dataset Create for one-off images.',
+  label: 'Nano Banana 2',
+  description: 'Multi-image reference edit/generation via the Nano Banana 2 RunPod endpoint. Focused alternative to Dataset Create for one-off image compositions.',
   size: 'lg',
   canStart: true,
   inputs: [
@@ -355,7 +392,7 @@ export const blockDef: BlockDef = {
   ],
   suggestedUpstream: ['uploadImageToTmpfiles', 'promptWriter', 'i2vPromptWriter'],
   suggestedDownstream: ['imageViewer', 'imageInspector', 'civitaiShare', 'seedance'],
-  configKeys: ['quality', 'aspect', 'prompt', 'use_upstream_prompt'],
+  configKeys: ['quality', 'aspect', 'prompt', 'use_upstream_prompt', 'local_refs'],
   component: NanoBanana2Block,
 }
 
