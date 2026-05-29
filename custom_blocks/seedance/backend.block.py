@@ -46,8 +46,8 @@ ALLOWED_MODES = {"text_to_video", "first_last_frames", "omni_reference"}
 #   ALL face references blocked at upstream visual review (no pre-submission).
 # *-preview-vip family — `mode`-less, 5/10/15 duration enum, 4 ARs only,
 #   non-real faces allowed (tightening), pre-submission moderation +
-#   refund on block. With `video_urls` set, output length = input video
-#   length when `duration` is sent as the upstream auto-length sentinel, 0.
+#   refund on block. Live tasks still enforce the 5/10/15 enum when
+#   `video_urls` is set.
 ALLOWED_TASK_TYPES = {
     "seedance-2",
     "seedance-2-fast",
@@ -205,20 +205,16 @@ def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str,
         if audios:
             payload["audio_urls"] = audios
 
-        # `duration` is user-controlled only without a video reference. With
-        # `video_urls`, PiAPI uses `duration: 0` as its auto-length sentinel;
-        # sending 5/10/15 or omitting the field can fall back to a 5s output.
-        if videos:
-            payload["duration"] = 0
-        else:
-            duration_raw = body.get("duration", 5)
-            try:
-                duration = int(duration_raw)
-            except (TypeError, ValueError):
-                duration = 5
-            if duration not in VIP_ALLOWED_DURATIONS:
-                raise ValueError(f"duration for {task_type} must be one of {sorted(VIP_ALLOWED_DURATIONS)}")
-            payload["duration"] = duration
+        # Preview-VIP accepts only 5/10/15. Live PiAPI tasks reject duration=0
+        # with "invalid duration" and default to 5s, even with video refs.
+        duration_raw = body.get("duration", 5)
+        try:
+            duration = int(duration_raw)
+        except (TypeError, ValueError):
+            duration = 5
+        if duration not in VIP_ALLOWED_DURATIONS:
+            raise ValueError(f"duration for {task_type} must be one of {sorted(VIP_ALLOWED_DURATIONS)}")
+        payload["duration"] = duration
 
         return payload
 

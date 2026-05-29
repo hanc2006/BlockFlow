@@ -70,7 +70,7 @@ const TASK_TYPE_OPTIONS: TaskTypeInfo[] = [
     resolutions: ['720p'],
     aspects: ['16:9', '9:16', '4:3', '3:4'],
     durations: [5, 10, 15],
-    hint: 'AI/non-real faces allowed. Pre-submission moderation refunds blocked requests. With video_urls, output length = input video length.',
+    hint: 'AI/non-real faces allowed. Pre-submission moderation refunds blocked requests. Preview-VIP duration is limited to 5/10/15.',
   },
   {
     value: 'seedance-2-preview-vip',
@@ -79,7 +79,7 @@ const TASK_TYPE_OPTIONS: TaskTypeInfo[] = [
     resolutions: ['720p', '1080p'],
     aspects: ['16:9', '9:16', '4:3', '3:4'],
     durations: [5, 10, 15],
-    hint: 'AI/non-real faces allowed. Pre-submission moderation refunds blocked requests. With video_urls, output length = input video length.',
+    hint: 'AI/non-real faces allowed. Pre-submission moderation refunds blocked requests. Preview-VIP duration is limited to 5/10/15.',
   },
 ]
 
@@ -207,9 +207,6 @@ function SeedanceBlock({
         ? 'omni_reference'
         : 'text_to_video')
     : mode
-  // VIP with video_urls: output length = input video length; duration is ignored.
-  const durationLockedByVideo = isVip && allVideoUrls.length > 0
-
   useEffect(() => {
     if (!availableResolutions.includes(resolution)) setResolution(availableResolutions[0])
   }, [taskType, availableResolutions, resolution, setResolution])
@@ -437,15 +434,12 @@ function SeedanceBlock({
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label className="text-[11px]">Duration</Label>
-          <span className="text-[11px] font-mono">
-            {durationLockedByVideo ? '= input video length' : `${duration}s`}
-          </span>
+          <span className="text-[11px] font-mono">{duration}s</span>
         </div>
         {isVip ? (
           <Select
             value={String(duration)}
             onValueChange={(v) => setDuration(Number(v))}
-            disabled={durationLockedByVideo}
           >
             <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -457,9 +451,9 @@ function SeedanceBlock({
         ) : (
           <Slider min={4} max={15} step={1} value={[duration]} onValueChange={(v) => setDuration(v[0])} />
         )}
-        {durationLockedByVideo && (
+        {isVip && allVideoUrls.length > 0 && (
           <p className="text-[10px] text-muted-foreground italic">
-            VIP with a video reference: the output length always matches the input video.
+            Preview-VIP video references still use the selected 5/10/15s duration.
           </p>
         )}
       </div>

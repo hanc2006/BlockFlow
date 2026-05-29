@@ -1,14 +1,13 @@
 """Tests for the seedance VIP `duration` ⇄ `video_urls` interaction.
 
-PiAPI VIP models (`seedance-2-preview-vip`, `seedance-2-fast-preview-vip`)
-set output length = input video length when the request uses the auto-length
-sentinel `duration: 0`. The PiAPI VIP video-reference request example omits
-`duration`, but completed VIP video-reference responses echo `duration: 0`.
+PiAPI preview-VIP models (`seedance-2-preview-vip`,
+`seedance-2-fast-preview-vip`) only accept the 5/10/15 duration enum, even
+when `video_urls` is present. The docs say video references should drive output
+length, but live preview-VIP tasks reject `duration: 0` with
+"invalid duration, use '5' as default".
 
-Our backend used to send `duration: 5`, then briefly omitted `duration`.
-PiAPI answered those runs with "invalid duration, use '5' as default", capping
-a 9s input video's output to 5s. These tests pin the corrected behavior: send
-`duration: 0` when `video_urls` is present, keep enum durations otherwise.
+These tests pin the defensive local behavior: keep the selected enum duration
+with video references so a hidden auto sentinel cannot fall back to 5s.
 """
 from __future__ import annotations
 
@@ -35,19 +34,19 @@ VIP_TYPES = ["seedance-2-preview-vip", "seedance-2-fast-preview-vip"]
 
 
 @pytest.mark.parametrize("task_type", VIP_TYPES)
-def test_vip_with_video_sends_auto_duration_zero(task_type):
-    """With a video reference, duration must be the auto-length sentinel."""
+def test_vip_with_video_keeps_selected_duration(task_type):
+    """With a video reference, preview-VIP still needs a valid duration enum."""
     payload = mod._validate_and_build_input(
         {
             "prompt": "make it cinematic",
-            "duration": 5,
+            "duration": 10,
             "resolution": "720p",
             "aspect_ratio": "16:9",
             "video_urls": ["https://tmpfiles.org/dl/abc/clip.mp4"],
         },
         task_type,
     )
-    assert payload["duration"] == 0
+    assert payload["duration"] == 10
     assert payload["video_urls"] == ["https://tmpfiles.org/dl/abc/clip.mp4"]
 
 
@@ -68,23 +67,19 @@ def test_vip_without_video_keeps_duration(task_type):
 
 
 @pytest.mark.parametrize("task_type", VIP_TYPES)
-def test_vip_with_video_skips_duration_enum_validation(task_type):
-    """A non-enum duration is harmless when a video ref is present (it's ignored),
-    so it must not raise — the value is irrelevant upstream."""
-    payload = mod._validate_and_build_input(
-        {
+def test_vip_with_video_rejects_invalid_duration(task_type):
+    """Avoid sending invalid auto sentinels that PiAPI turns into 5s outputs."""
+    with pytest.raises(ValueError, match="duration"):
+        mod._validate_and_build_input({
             "prompt": "x",
-            "duration": 9,  # not in {5,10,15}; ignored because video_urls present
+            "duration": 0,
             "resolution": "720p",
             "aspect_ratio": "16:9",
             "video_urls": ["https://tmpfiles.org/dl/abc/clip.mp4"],
-        },
-        task_type,
-    )
-    assert payload["duration"] == 0
+        }, task_type)
 
 
-def test_run_route_passes_auto_duration_zero_to_job(monkeypatch):
+def test_run_route_passes_selected_duration_to_job(monkeypatch):
     """The HTTP route must pass the corrected PiAPI payload to the job runner."""
     captured: dict[str, object] = {}
 
@@ -115,7 +110,7 @@ def test_run_route_passes_auto_duration_zero_to_job(monkeypatch):
             "piapi_api_key": "test-key",
             "task_type": "seedance-2-preview-vip",
             "prompt": "make it cinematic",
-            "duration": 5,
+            "duration": 10,
             "resolution": "720p",
             "aspect_ratio": "16:9",
             "video_urls": ["https://tmpfiles.org/dl/abc/clip.mp4"],
@@ -130,5 +125,5 @@ def test_run_route_passes_auto_duration_zero_to_job(monkeypatch):
         "aspect_ratio": "16:9",
         "resolution": "720p",
         "video_urls": ["https://tmpfiles.org/dl/abc/clip.mp4"],
-        "duration": 0,
+        "duration": 10,
     }
