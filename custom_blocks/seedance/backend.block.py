@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -87,6 +88,26 @@ def _headers(api_key: str) -> dict[str, str]:
         "Content-Type": "application/json",
         "User-Agent": PIAPI_UA,
     }
+
+
+# PiAPI surfaces its internal retry mechanics + benign default notes in the
+# task `logs` array. We pass logs through to the block UI, but the user only
+# wants substantive outcome lines — the final failure already surfaces via the
+# job error/status. So drop: per-attempt retry markers, transient errors PiAPI
+# retried away (5xx), and the "invalid duration, use '5' as default" note we
+# deliberately trigger by omitting `duration` on VIP+video runs (output length
+# then equals the input video length per PiAPI's docs).
+_LOG_NOISE_PATTERNS = (
+    re.compile(r"\battempt\s+\d+\s+failed", re.I),
+    re.compile(r"\bretrying\b", re.I),
+    re.compile(r"invalid duration", re.I),
+    re.compile(r"internal server error status code", re.I),
+)
+
+
+def _filter_upstream_logs(logs: list[str]) -> list[str]:
+    """Strip upstream retry chatter / benign default notes from PiAPI logs."""
+    return [ln for ln in logs if not any(p.search(ln) for p in _LOG_NOISE_PATTERNS)]
 
 
 def _request_json(method: str, url: str, headers: dict[str, str], payload: dict[str, Any] | None = None, timeout: int = 60) -> dict[str, Any]:
@@ -326,7 +347,7 @@ async def _run_job(job_id: str, api_key: str, task_type: str, input_payload: dic
             poll_data = (poll.get("data") if isinstance(poll, dict) else None) or {}
             remote_status = str(poll_data.get("status") or "").lower()
             logs_raw = poll_data.get("logs") or []
-            remote_logs = [str(x) for x in logs_raw if isinstance(x, str)]
+            remote_logs = _filter_upstream_logs([str(x) for x in logs_raw if isinstance(x, str)])
             with JOBS_LOCK:
                 rec = JOBS.get(job_id)
                 if rec is not None:
