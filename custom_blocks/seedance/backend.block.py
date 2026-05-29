@@ -355,11 +355,9 @@ async def _run_job(job_id: str, api_key: str, task_type: str, input_payload: dic
                     rec["remote_status"] = remote_status
                     rec["remote_logs"] = remote_logs
 
-            if remote_status == "completed":
-                output = poll_data.get("output") or {}
-                video_url = output.get("video") if isinstance(output, dict) else None
-                if not video_url:
-                    raise RuntimeError(f"completed but no output.video: {json.dumps(poll_data)[:500]}")
+            output = poll_data.get("output") or {}
+            video_url = output.get("video") if isinstance(output, dict) else None
+            if video_url:
                 local_path = SEEDANCE_DIR / f"{job_id}.mp4"
                 await asyncio.to_thread(_download, video_url, local_path)
                 rel_url = f"/outputs/seedance/{local_path.name}"
@@ -373,6 +371,9 @@ async def _run_job(job_id: str, api_key: str, task_type: str, input_payload: dic
                         rec["remote_logs"] = remote_logs
                         rec["ended_at"] = time.time()
                 return
+
+            if remote_status == "completed":
+                raise RuntimeError(f"completed but no output.video: {json.dumps(poll_data)[:500]}")
 
             if remote_status == "failed":
                 err = poll_data.get("error") or {}
