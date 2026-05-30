@@ -26,3 +26,12 @@ def test_npx_bin_boots_packaged_app_via_uv_project():
     assert "'--packaged'," in wrapper
     assert "https://astral.sh/uv/install.sh" in wrapper
     assert "https://astral.sh/uv/install.ps1" in wrapper
+
+
+def test_npm_publish_workflow_uses_oidc_trusted_publishing():
+    workflow = (ROOT / ".github" / "workflows" / "publish-npm.yml").read_text(encoding="utf-8")
+
+    assert "name: Publish npm package" in workflow
+    assert "name: npm" in workflow
+    assert "id-token: write" in workflow
+    assert "run: npm publish" in workflow
