@@ -40,6 +40,7 @@ Create the matching GitHub environment:
    npm --prefix frontend test -- verify-standalone-build.test.ts
    npm --prefix frontend run build
    npm pack --dry-run
+   node scripts/smoke_npm_package.mjs
    ```
 
 4. Commit the version change.
@@ -50,6 +51,6 @@ Create the matching GitHub environment:
    git push origin main --tags
    ```
 
-The `Publish npm package` workflow builds the standalone frontend, verifies the npm tarball contains the packaged runtime assets, and runs `npm publish` through npm trusted publishing.
+The `Publish npm package` workflow first runs the packaged `npx` smoke on macOS, Linux, and Windows. Each matrix leg packs the npm tarball, launches it through `npm exec`, uses an isolated `BLOCKFLOW_HOME`, verifies the backend and frontend are reachable, and checks that `comfy-gen` resolves from the managed sidecar venv. The publish job only runs after that matrix passes.
 
 After trusted publishing works, update npm package settings to require 2FA and disallow long-lived tokens for publishing.

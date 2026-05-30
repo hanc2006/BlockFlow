@@ -13,6 +13,7 @@
     "bin/",
     "custom_blocks/",
     "frontend/.next/standalone/",
+    "frontend/.next/standalone/node_modules/",
     "frontend/package.json",
     "pyproject.toml",
     "README.md",
@@ -23,7 +24,8 @@
   ],
   "scripts": {
     "build": "npm --prefix frontend run build",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "npm pack --dry-run",
+    "smoke:npm-package": "node scripts/smoke_npm_package.mjs"
   },
   "engines": {
     "node": ">=22.14.0"

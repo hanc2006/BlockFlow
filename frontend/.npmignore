@@ -1,4 +1,6 @@
 node_modules/
+!.next/standalone/node_modules/
+!.next/standalone/node_modules/**
 .next/cache/
 .next/trace
 .next/turbopack/

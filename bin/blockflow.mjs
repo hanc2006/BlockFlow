@@ -74,11 +74,15 @@ function main() {
   const home = defaultHome()
   fs.mkdirSync(home, { recursive: true })
   const uv = resolveUv(home)
+  const venv = path.join(home, 'runtime', 'venv')
+  fs.mkdirSync(path.dirname(venv), { recursive: true })
 
   const env = {
     ...process.env,
     BLOCKFLOW_HOME: home,
     BLOCKFLOW_PACKAGED: '1',
+    BLOCKFLOW_COMFY_GEN_VENV: venv,
+    UV_PROJECT_ENVIRONMENT: venv,
   }
 
   const args = [

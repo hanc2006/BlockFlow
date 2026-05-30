@@ -9,8 +9,39 @@ permissions:
   contents: read
 
 jobs:
+  npx-smoke:
+    name: Cross-platform npx smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Build frontend standalone bundle
+        run: npm --prefix frontend run build
+
+      - name: Run packaged npx smoke
+        run: node scripts/smoke_npm_package.mjs
+
   publish:
     name: Build, verify, and publish
+    needs: npx-smoke
     runs-on: ubuntu-latest
     environment:
       name: npm
