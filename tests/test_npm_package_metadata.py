@@ -28,6 +28,8 @@ def test_npx_bin_boots_packaged_app_via_uv_project():
     assert "'--packaged'," in wrapper
     assert "https://astral.sh/uv/install.sh" in wrapper
     assert "https://astral.sh/uv/install.ps1" in wrapper
+    assert "uv-x86_64-pc-windows-msvc.zip" in wrapper
+    assert "tar.exe" in wrapper
 
 
 def test_npm_publish_workflow_uses_oidc_trusted_publishing():

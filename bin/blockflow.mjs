@@ -38,18 +38,69 @@ function run(command, args, options = {}) {
   }
 }
 
+function windowsUvAssetName() {
+  if (process.arch === 'x64') return 'uv-x86_64-pc-windows-msvc.zip'
+  if (process.arch === 'arm64') return 'uv-aarch64-pc-windows-msvc.zip'
+  if (process.arch === 'ia32') return 'uv-i686-pc-windows-msvc.zip'
+  throw new Error(`unsupported Windows architecture for uv bootstrap: ${process.arch}`)
+}
+
+function findFile(dir, filename) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const candidate = path.join(dir, entry.name)
+    if (entry.isFile() && entry.name.toLowerCase() === filename.toLowerCase()) {
+      return candidate
+    }
+    if (entry.isDirectory()) {
+      const found = findFile(candidate, filename)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+function installUvFromWindowsArchive(installDir) {
+  const asset = windowsUvAssetName()
+  const url = `https://github.com/astral-sh/uv/releases/latest/download/${asset}`
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'blockflow-uv-'))
+  const archive = path.join(tmp, asset)
+  const extracted = path.join(tmp, 'extract')
+  fs.mkdirSync(extracted, { recursive: true })
+
+  try {
+    console.error(`[blockflow] downloading uv release archive ${url}`)
+    run('curl.exe', ['-L', '--fail', '--retry', '3', '-o', archive, url])
+    run('tar.exe', ['-xf', archive, '-C', extracted])
+
+    const uv = findFile(extracted, 'uv.exe')
+    if (!uv) throw new Error(`uv.exe not found in ${asset}`)
+    fs.copyFileSync(uv, path.join(installDir, 'uv.exe'))
+
+    const uvx = findFile(extracted, 'uvx.exe')
+    if (uvx) fs.copyFileSync(uvx, path.join(installDir, 'uvx.exe'))
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
 function installUv(installDir) {
   fs.mkdirSync(installDir, { recursive: true })
   console.error(`[blockflow] uv not found; installing uv into ${installDir}`)
 
   if (process.platform === 'win32') {
-    run('powershell.exe', [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      `$env:UV_INSTALL_DIR=${JSON.stringify(installDir)}; irm https://astral.sh/uv/install.ps1 | iex`,
-    ])
+    try {
+      run('powershell.exe', [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        `$env:UV_INSTALL_DIR=${JSON.stringify(installDir)}; irm https://astral.sh/uv/install.ps1 | iex`,
+      ])
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[blockflow] uv PowerShell installer failed; falling back to direct release archive: ${message}`)
+      installUvFromWindowsArchive(installDir)
+    }
   } else {
     run('sh', [
       '-c',
