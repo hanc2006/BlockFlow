@@ -37,11 +37,25 @@ function jsonResponse(body: unknown) {
   }))
 }
 
-function mockFetch(options: { failEndpoints?: string[] } = {}) {
+function mockFetch(options: {
+  failEndpoints?: string[]
+  malformedSuccessEndpoints?: string[]
+  jobEndpoints?: Record<string, string[]>
+} = {}) {
+  const jobEndpointCounts = new Map<string, number>()
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input)
     if (options.failEndpoints?.includes(url)) {
       return jsonResponse({ ok: false, error: 'contract stop' })
+    }
+    if (options.malformedSuccessEndpoints?.includes(url)) {
+      return jsonResponse({ ok: true })
+    }
+    const jobs = options.jobEndpoints?.[url]
+    if (jobs?.length) {
+      const idx = jobEndpointCounts.get(url) ?? 0
+      jobEndpointCounts.set(url, idx + 1)
+      return jsonResponse({ ok: true, job_id: jobs[Math.min(idx, jobs.length - 1)] })
     }
     if (url.includes('/health')) {
       return jsonResponse({
@@ -190,6 +204,36 @@ function postedJson(fetchMock: ReturnType<typeof vi.fn>, endpoint: string): Reco
   return JSON.parse(init.body) as Record<string, unknown>
 }
 
+const POLLING_MEDIA_BLOCKS = [
+  {
+    type: 'seedance',
+    blockId: 'malformed-seedance',
+    submitEndpoint: '/api/blocks/seedance/run',
+    healthEndpoint: '/api/blocks/seedance/health',
+    cancelEndpoint: '/api/blocks/seedance/cancel/job-seedance',
+    setup: (blockId: string) => {
+      setSession(blockId, 'prompt', 'seedance prompt')
+      setSession(blockId, 'mode', 'omni_reference')
+    },
+  },
+  {
+    type: 'gptImagePiapi',
+    blockId: 'malformed-gptImagePiapi',
+    submitEndpoint: '/api/blocks/gpt_image_piapi/run',
+    healthEndpoint: '/api/blocks/gpt_image_piapi/health',
+    cancelEndpoint: '/api/blocks/gpt_image_piapi/cancel/job-gptImagePiapi',
+    setup: (blockId: string) => setSession(blockId, 'prompt', 'gpt prompt'),
+  },
+  {
+    type: 'nanoBanana2',
+    blockId: 'malformed-nanoBanana2',
+    submitEndpoint: '/api/blocks/nano_banana_2/run',
+    healthEndpoint: '/api/blocks/nano_banana_2/health',
+    cancelEndpoint: '/api/blocks/nano_banana_2/cancel/job-nanoBanana2',
+    setup: (blockId: string) => setSession(blockId, 'prompt', 'nano prompt'),
+  },
+]
+
 describe('custom block contracts', () => {
   beforeEach(() => {
     sessionStorage.clear()
@@ -202,6 +246,7 @@ describe('custom block contracts', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     cleanup()
     vi.restoreAllMocks()
   })
@@ -359,6 +404,54 @@ describe('custom block contracts', () => {
       await expect(execute(contractInputs(), new AbortController().signal)).rejects.toThrow('contract stop')
 
       assertPayload(postedJson(fetchMock, failEndpoint))
+    },
+  )
+
+  it.each(POLLING_MEDIA_BLOCKS)(
+    '$type rejects malformed submit success before polling an undefined job id',
+    async ({ type, blockId, submitEndpoint, healthEndpoint, setup }) => {
+      setup(blockId)
+      const fetchMock = mockFetch({ malformedSuccessEndpoints: [submitEndpoint] })
+      const { execute } = await renderAndCaptureExecute(type, {
+        blockId,
+        waitForFetchUrl: healthEndpoint,
+      })
+
+      vi.useFakeTimers()
+      const run = execute(contractInputs(), new AbortController().signal)
+      const runExpectation = expect(run).rejects.toThrow(/job/i)
+      await vi.advanceTimersByTimeAsync(5500)
+
+      await runExpectation
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/status/undefined'))).toBe(false)
+      vi.useRealTimers()
+    },
+  )
+
+  it.each(POLLING_MEDIA_BLOCKS)(
+    '$type calls cancel endpoint when aborted after submit',
+    async ({ type, blockId, submitEndpoint, healthEndpoint, cancelEndpoint, setup }) => {
+      setup(blockId)
+      const jobId = cancelEndpoint.split('/').pop()!
+      const fetchMock = mockFetch({ jobEndpoints: { [submitEndpoint]: [jobId] } })
+      const { execute } = await renderAndCaptureExecute(type, {
+        blockId,
+        waitForFetchUrl: healthEndpoint,
+      })
+      const controller = new AbortController()
+
+      vi.useFakeTimers()
+      const run = execute(contractInputs(), controller.signal)
+      await vi.waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(submitEndpoint, expect.objectContaining({ method: 'POST' }))
+      })
+      const runExpectation = expect(run).rejects.toThrow(/abort/i)
+      controller.abort()
+      await vi.advanceTimersByTimeAsync(5500)
+
+      expect(fetchMock).toHaveBeenCalledWith(cancelEndpoint, expect.objectContaining({ method: 'POST' }))
+      await runExpectation
+      vi.useRealTimers()
     },
   )
 })

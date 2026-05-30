@@ -178,10 +178,17 @@ function NanoBanana2Block({
       })
       const startData = await startRes.json()
       if (!startData.ok) throw new Error(startData.error || 'submit failed')
-      const jobId = startData.job_id as string
+      const jobId = typeof startData.job_id === 'string' && startData.job_id.trim()
+        ? startData.job_id
+        : ''
+      if (!jobId) throw new Error('submit returned no job_id')
 
       const onAbort = () => { fetch(CANCEL_ENDPOINT(jobId), { method: 'POST' }).catch(() => {}) }
       signal.addEventListener('abort', onAbort)
+      if (signal.aborted) {
+        onAbort()
+        throw new DOMException('Aborted', 'AbortError')
+      }
       try {
         while (true) {
           if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
