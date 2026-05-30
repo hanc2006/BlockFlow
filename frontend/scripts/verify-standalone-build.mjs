@@ -51,18 +51,22 @@ export async function verifyStandaloneBuild(frontendDir = process.cwd()) {
   const staticDir = path.join(root, '.next', 'static')
   const publicDir = path.join(root, 'public')
   const serverPath = await findStandaloneServer(root)
+  const standaloneStaticDir = serverPath ? path.join(path.dirname(serverPath), '.next', 'static') : null
+  const standalonePublicDir = serverPath ? path.join(path.dirname(serverPath), 'public') : null
 
   const missing = []
   if (!(await exists(standaloneDir))) missing.push('.next/standalone')
   if (!serverPath) missing.push('.next/standalone/**/server.js')
   if (!(await exists(staticDir))) missing.push('.next/static')
+  if (standaloneStaticDir && !(await exists(standaloneStaticDir))) missing.push('.next/standalone/**/.next/static')
   if (!(await exists(publicDir))) missing.push('public')
+  if (standalonePublicDir && !(await exists(standalonePublicDir))) missing.push('.next/standalone/**/public')
 
   if (missing.length > 0) {
     throw new Error(`Missing standalone build artifact(s): ${missing.join(', ')}`)
   }
 
-  return { standaloneDir, serverPath, staticDir, publicDir }
+  return { standaloneDir, serverPath, staticDir, standaloneStaticDir, publicDir, standalonePublicDir }
 }
 
 if (process.argv[1] === scriptPath) {
