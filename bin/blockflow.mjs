@@ -26,7 +26,7 @@ function exe(name) {
 function commandExists(command) {
   const probe = process.platform === 'win32'
     ? spawnSync('where', [command], { stdio: 'ignore' })
-    : spawnSync('command', ['-v', command], { shell: true, stdio: 'ignore' })
+    : spawnSync(`command -v ${command}`, { shell: true, stdio: 'ignore' })
   return probe.status === 0
 }
 
