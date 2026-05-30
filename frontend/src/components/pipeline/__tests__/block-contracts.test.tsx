@@ -28,6 +28,8 @@ import {
   type BlockDef,
 } from '@/lib/pipeline/registry'
 
+type ExecuteFn = (inputs: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
+
 function jsonResponse(body: unknown) {
   return Promise.resolve(new Response(JSON.stringify(body), {
     status: 200,
@@ -35,9 +37,12 @@ function jsonResponse(body: unknown) {
   }))
 }
 
-function mockFetch() {
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+function mockFetch(options: { failEndpoints?: string[] } = {}) {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input)
+    if (options.failEndpoints?.includes(url)) {
+      return jsonResponse({ ok: false, error: 'contract stop' })
+    }
     if (url.includes('/health')) {
       return jsonResponse({
         ok: true,
@@ -78,7 +83,9 @@ function mockFetch() {
       return jsonResponse({ ok: false, error: 'not found' })
     }
     return jsonResponse({ ok: true })
-  }))
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
 }
 
 function contractInputs(): Record<string, unknown> {
@@ -118,6 +125,69 @@ function renderContractBlock(def: BlockDef) {
     </PipelineTabsProvider>,
   )
   return { ...result, props }
+}
+
+function blockDef(type: string): BlockDef {
+  const def = listBlockDefs().find((candidate) => candidate.type === type)
+  if (!def) throw new Error(`Missing block def: ${type}`)
+  return def
+}
+
+async function renderAndCaptureExecute(
+  type: string,
+  options: {
+    blockId?: string
+    inputs?: Record<string, unknown>
+    waitForFetchUrl?: string
+  } = {},
+): Promise<{ execute: ExecuteFn; props: BlockComponentProps }> {
+  let execute: ExecuteFn | null = null
+  const def = blockDef(type)
+  const blockId = options.blockId ?? `execute-${type}`
+  const props: BlockComponentProps = {
+    blockId,
+    inputs: options.inputs ?? contractInputs(),
+    setOutput: vi.fn(),
+    registerExecute: vi.fn((fn) => { execute = fn as ExecuteFn }),
+    setStatusMessage: vi.fn(),
+    setExecutionStatus: vi.fn(),
+    setOutputHint: vi.fn(),
+    setHeaderActions: vi.fn(),
+    hasUpstreamProducer: vi.fn(() => true),
+  }
+  const Component = def.component
+  render(
+    <PipelineTabsProvider>
+      <PipelineProvider tabId={`execute-${type}`}>
+        <Component {...props} />
+      </PipelineProvider>
+    </PipelineTabsProvider>,
+  )
+  await waitFor(() => {
+    expect(props.registerExecute).toHaveBeenCalledWith(expect.any(Function))
+  })
+  if (options.waitForFetchUrl) {
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(options.waitForFetchUrl)
+    })
+    await waitFor(() => {
+      expect((props.registerExecute as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1)
+    })
+  }
+  if (!execute) throw new Error(`No execute registered for ${type}`)
+  return { execute, props }
+}
+
+function setSession(blockId: string, key: string, value: unknown) {
+  sessionStorage.setItem(`block_${blockId}_${key}`, JSON.stringify(value))
+}
+
+function postedJson(fetchMock: ReturnType<typeof vi.fn>, endpoint: string): Record<string, unknown> {
+  const call = fetchMock.mock.calls.find(([input]) => String(input) === endpoint)
+  if (!call) throw new Error(`No fetch call for ${endpoint}`)
+  const init = call[1] as RequestInit | undefined
+  if (typeof init?.body !== 'string') throw new Error(`No JSON body for ${endpoint}`)
+  return JSON.parse(init.body) as Record<string, unknown>
 }
 
 describe('custom block contracts', () => {
@@ -187,6 +257,108 @@ describe('custom block contracts', () => {
       await waitFor(() => {
         expect(props.registerExecute).toHaveBeenCalledWith(expect.any(Function))
       })
+    },
+  )
+
+  it.each([
+    {
+      type: 'seedance',
+      blockId: 'execute-seedance',
+      failEndpoint: '/api/blocks/seedance/run',
+      healthEndpoint: '/api/blocks/seedance/health',
+      setup: () => {
+        setSession('execute-seedance', 'prompt', 'seedance prompt')
+        setSession('execute-seedance', 'mode', 'omni_reference')
+      },
+      assertPayload: (body: Record<string, unknown>) => {
+        expect(body).toMatchObject({
+          prompt: 'seedance prompt',
+          mode: 'omni_reference',
+          image_urls: ['/outputs/contract/image.png'],
+          video_urls: ['/outputs/contract/video.mp4'],
+          audio_urls: ['/outputs/contract/audio.mp3'],
+        })
+      },
+    },
+    {
+      type: 'gptImagePiapi',
+      blockId: 'execute-gptImagePiapi',
+      failEndpoint: '/api/blocks/gpt_image_piapi/run',
+      healthEndpoint: '/api/blocks/gpt_image_piapi/health',
+      setup: () => setSession('execute-gptImagePiapi', 'prompt', 'gpt prompt'),
+      assertPayload: (body: Record<string, unknown>) => {
+        expect(body).toMatchObject({
+          prompt: 'gpt prompt',
+          reference_image_urls: ['/outputs/contract/image.png'],
+        })
+      },
+    },
+    {
+      type: 'nanoBanana2',
+      blockId: 'execute-nanoBanana2',
+      failEndpoint: '/api/blocks/nano_banana_2/run',
+      healthEndpoint: '/api/blocks/nano_banana_2/health',
+      setup: () => setSession('execute-nanoBanana2', 'prompt', 'nano prompt'),
+      assertPayload: (body: Record<string, unknown>) => {
+        expect(body).toMatchObject({
+          prompt: 'nano prompt',
+          reference_image_urls: ['/outputs/contract/image.png'],
+        })
+      },
+    },
+    {
+      type: 'datasetCreate',
+      blockId: 'execute-datasetCreate',
+      failEndpoint: '/api/blocks/dataset_create/run',
+      healthEndpoint: '/api/blocks/dataset_create/health',
+      setup: () => setSession('execute-datasetCreate', 'custom_prompt', 'dataset prompt'),
+      assertPayload: (body: Record<string, unknown>) => {
+        expect(body).toMatchObject({
+          custom_prompts: ['dataset prompt'],
+          reference_image_urls: ['/outputs/contract/image.png'],
+        })
+      },
+    },
+    {
+      type: 'imageUpscale',
+      blockId: 'execute-imageUpscale',
+      failEndpoint: '/api/blocks/image_upscale/upscale',
+      healthEndpoint: '/api/blocks/image_upscale/settings',
+      setup: () => {},
+      assertPayload: (body: Record<string, unknown>) => {
+        expect(body).toMatchObject({
+          source_images: ['/outputs/contract/image.png'],
+        })
+      },
+    },
+    {
+      type: 'multimodalPromptWriter',
+      blockId: 'execute-multimodalPromptWriter',
+      failEndpoint: '/api/blocks/multimodal_prompt_writer/generate',
+      healthEndpoint: '/api/blocks/multimodal_prompt_writer/settings',
+      setup: () => {},
+      assertPayload: (body: Record<string, unknown>) => {
+        expect(body).toMatchObject({
+          upstream_text: 'contract prompt',
+          image_urls: ['/outputs/contract/image.png'],
+          video_url: '/outputs/contract/video.mp4',
+          audio_url: '/outputs/contract/audio.mp3',
+        })
+      },
+    },
+  ])(
+    '$type execute preserves backend-resolvable media refs in its backend payload',
+    async ({ type, blockId, failEndpoint, healthEndpoint, setup, assertPayload }) => {
+      setup()
+      const fetchMock = mockFetch({ failEndpoints: [failEndpoint] })
+      const { execute } = await renderAndCaptureExecute(type, {
+        blockId,
+        waitForFetchUrl: healthEndpoint,
+      })
+
+      await expect(execute(contractInputs(), new AbortController().signal)).rejects.toThrow('contract stop')
+
+      assertPayload(postedJson(fetchMock, failEndpoint))
     },
   )
 })
