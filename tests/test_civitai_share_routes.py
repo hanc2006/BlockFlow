@@ -17,7 +17,7 @@ import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from backend import civitai_client  # noqa: E402
+from backend import civitai_client, settings_store  # noqa: E402
 
 
 def _load_share_backend():
@@ -241,3 +241,12 @@ def test_post_info_route_is_removed(client):
 def test_add_to_post_route_is_removed(client):
     resp = client.post("/add-to-post", json={"token": "x", "post_id": 1})
     assert resp.status_code == 404
+
+
+def test_get_token_prefers_saved_settings_credential(tmp_path, monkeypatch):
+    monkeypatch.delenv("CIVITAI_API_KEY", raising=False)
+    monkeypatch.setattr(settings_store, "DB_PATH", tmp_path / "settings.db")
+    settings_store.init_db()
+    settings_store.set_credential("civitai_api_key", "civ_saved")
+
+    assert share_backend._get_token() == "civ_saved"

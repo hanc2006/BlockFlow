@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config, media_meta, state
+from backend import config, media_meta, settings_store, state
 from backend.topaz_upscaler import TopazProgress, upscale_video
 
 router = APIRouter()
@@ -19,6 +19,14 @@ router = APIRouter()
 # In-memory upscale job tracking
 _upscale_jobs: dict[str, dict[str, Any]] = {}
 _upscale_lock = threading.Lock()
+
+
+def _topaz_api_key(payload_value: object = "") -> str:
+    return str(
+        payload_value
+        or settings_store.get_credential("topaz_api_key")
+        or os.getenv("TOPAZ_API_KEY", "")
+    )
 
 
 def _update_upscale_job(job_id: str, **updates: Any) -> None:
@@ -136,8 +144,10 @@ def _run_upscale_job(
 
 @router.get("/settings")
 def get_settings() -> JSONResponse:
+    has_api_key = bool(settings_store.get_credential("topaz_api_key") or os.getenv("TOPAZ_API_KEY", ""))
     return JSONResponse({
         "ok": True,
+        "has_api_key": has_api_key,
         "has_env_api_key": bool(os.getenv("TOPAZ_API_KEY", "")),
     })
 
@@ -146,7 +156,7 @@ def get_settings() -> JSONResponse:
 async def upscale(request: Request) -> JSONResponse:
     payload = await request.json()
     source_videos = payload.get("source_videos", [])
-    topaz_api_key = str(payload.get("topaz_api_key") or os.getenv("TOPAZ_API_KEY", ""))
+    topaz_api_key = _topaz_api_key(payload.get("topaz_api_key"))
     enhancement_model = str(payload.get("enhancement_model", "ahq-12"))
     interpolation_model = payload.get("interpolation_model", "apo-8")
     output_fps = payload.get("output_fps")

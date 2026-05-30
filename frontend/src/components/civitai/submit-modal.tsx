@@ -21,6 +21,7 @@ import {
   SHARE_ENDPOINT,
   directBackendUrl,
 } from './constants'
+import { getCredential } from '@/lib/settings/client'
 
 /** Live pipeline block route — same source of truth the in-pipeline gate
  *  uses to enrich a job's saved metadata with model_hashes/lora_hashes. */
@@ -93,13 +94,27 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
 
   // Token
   const [token, setTokenRaw] = useState(() => {
-    if (typeof window === 'undefined') return ''
-    return localStorage.getItem(CIVITAI_TOKEN_KEY) ?? ''
+    return ''
   })
   const setToken = useCallback((v: string) => {
     setTokenRaw(v)
-    if (typeof window !== 'undefined') localStorage.setItem(CIVITAI_TOKEN_KEY, v)
   }, [])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const stored = await getCredential(CIVITAI_TOKEN_KEY)
+        if (!cancelled && stored?.value) setToken(stored.value)
+      } catch {
+        // Non-fatal: users can still paste a key into this modal.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open, setToken])
 
   // Manual resources (per-share, no persistence)
   const [manualResources, setManualResources] = useState<GateManualResource[]>([])

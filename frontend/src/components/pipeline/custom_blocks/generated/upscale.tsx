@@ -34,7 +34,6 @@ import {
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
 
-const TOPAZ_KEY_STORAGE = 'topaz_api_key'
 const UPSCALE_ENDPOINT = '/api/blocks/upscale/upscale'
 const UPSCALE_SETTINGS_ENDPOINT = '/api/blocks/upscale/settings'
 const UPSCALE_STATUS_ENDPOINT_BASE = '/api/blocks/upscale/status'
@@ -242,16 +241,8 @@ function UpscaleBlock({
   setStatusMessage,
   setExecutionStatus,
 }: BlockComponentProps) {
-  // API key stored in localStorage (sensitive — not sessionStorage)
-  const [apiKey, setApiKeyRaw] = useState(() => {
-    if (typeof window === 'undefined') return ''
-    return localStorage.getItem(TOPAZ_KEY_STORAGE) ?? ''
-  })
-  const setApiKey = useCallback((v: string) => {
-    setApiKeyRaw(v)
-    localStorage.setItem(TOPAZ_KEY_STORAGE, v)
-  }, [])
-  const [hasEnvApiKey, setHasEnvApiKey] = useState(false)
+  const [apiKey, setApiKey] = useState('')
+  const [hasConfiguredApiKey, setHasConfiguredApiKey] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -259,11 +250,11 @@ function UpscaleBlock({
     fetchUpscaleSettings()
       .then((res) => {
         if (cancelled) return
-        setHasEnvApiKey(Boolean(res?.ok && res?.has_env_api_key))
+        setHasConfiguredApiKey(Boolean(res?.ok && (res?.has_api_key || res?.has_env_api_key)))
       })
       .catch(() => {
         if (cancelled) return
-        setHasEnvApiKey(false)
+        setHasConfiguredApiKey(false)
       })
 
     return () => {
@@ -392,8 +383,8 @@ function UpscaleBlock({
       const sourceVideos = toDisplayVideoUrls(freshInputs.video)
       if (!sourceVideos.length) throw new Error('No video input URLs')
 
-      const key = hasEnvApiKey ? '' : apiKey.trim()
-      if (!hasEnvApiKey && !key) throw new Error('Topaz API key is required')
+      const key = apiKey.trim()
+      if (!hasConfiguredApiKey && !key) throw new Error('Topaz API key is required')
 
       setExecutionStatus?.('running')
       setStatusMessage('Submitting upscale\u2026')
@@ -451,11 +442,11 @@ function UpscaleBlock({
 
   return (
     <div className="space-y-3">
-      {!hasEnvApiKey && !apiKey.trim() && (
+      {!hasConfiguredApiKey && !apiKey.trim() && (
         <ProviderMissingCard
           provider="Topaz"
           credentialLabel="Topaz API key"
-          settingsHint="Settings -> Credentials or paste a key below"
+          settingsHint="Settings -> Credentials or paste a one-time key below"
         />
       )}
       <div className="space-y-1.5">
@@ -464,13 +455,12 @@ function UpscaleBlock({
           type="password"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
-          placeholder={hasEnvApiKey ? 'Already populated from .env (TOPAZ_API_KEY)' : 'Enter API key'}
+          placeholder={hasConfiguredApiKey ? 'Configured in Settings' : 'Enter one-time API key'}
           className="h-7 text-xs"
-          disabled={hasEnvApiKey}
         />
-        {hasEnvApiKey && (
+        {hasConfiguredApiKey && (
           <p className="text-[10px] text-muted-foreground">
-            TOPAZ_API_KEY is loaded from .env on the backend.
+            Topaz API key is configured in Settings.
           </p>
         )}
       </div>

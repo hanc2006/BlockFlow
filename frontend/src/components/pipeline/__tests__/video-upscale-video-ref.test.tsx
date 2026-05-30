@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import { blockDef } from '../custom_blocks/generated/upscale'
 
 type ExecuteFn = (inputs: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
@@ -12,10 +12,10 @@ function jsonResponse(body: unknown) {
 }
 
 function mockFetch() {
-  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input)
     if (url === '/api/blocks/upscale/settings') {
-      return jsonResponse({ ok: true, has_env_api_key: false })
+      return jsonResponse({ ok: true, has_api_key: true, has_env_api_key: false })
     }
     if (url === '/api/blocks/upscale/upscale') {
       return jsonResponse({ ok: true, job_ids: ['topaz-job-1'] })
@@ -67,32 +67,18 @@ function renderBlock(blockId = 'upscale1') {
   return { setOutput, setStatusMessage, setExecutionStatus, getExecute: () => execute }
 }
 
-function makeStorage(initial: Record<string, string> = {}) {
-  const data = new Map(Object.entries(initial))
-  return {
-    getItem: vi.fn((key: string) => data.get(key) ?? null),
-    setItem: vi.fn((key: string, value: string) => {
-      data.set(key, value)
-    }),
-    removeItem: vi.fn((key: string) => {
-      data.delete(key)
-    }),
-    clear: vi.fn(() => {
-      data.clear()
-    }),
-  }
-}
-
 describe('Video Upscale input URL resolution', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     sessionStorage.clear()
-    vi.stubGlobal('localStorage', makeStorage({ topaz_api_key: 'test-topaz-key' }))
   })
 
   it('submits the local URL from VideoRef inputs emitted by Video Loader', async () => {
     const fetchMock = mockFetch()
     const { getExecute, setOutput } = renderBlock()
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/blocks/upscale/settings')
+    })
     const execute = getExecute()
     expect(execute).toBeTypeOf('function')
 

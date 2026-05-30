@@ -54,7 +54,8 @@ CIVITAI_TRPC_BASE = "https://civitai.com/api/trpc"
 
 
 def _get_token() -> str:
-    return os.environ.get("CIVITAI_API_KEY", "")
+    from backend import settings_store
+    return settings_store.get_credential("civitai_api_key") or os.environ.get("CIVITAI_API_KEY", "")
 
 
 def _api_headers(token: str) -> dict[str, str]:

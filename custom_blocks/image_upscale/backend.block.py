@@ -11,13 +11,21 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config, state
+from backend import config, settings_store, state
 from backend.topaz_image_upscaler import upscale_image
 
 router = APIRouter()
 
 _upscale_jobs: dict[str, dict[str, Any]] = {}
 _upscale_lock = threading.Lock()
+
+
+def _topaz_api_key(payload_value: object = "") -> str:
+    return str(
+        payload_value
+        or settings_store.get_credential("topaz_api_key")
+        or os.getenv("TOPAZ_API_KEY", "")
+    )
 
 
 def _update_job(job_id: str, **updates: Any) -> None:
@@ -103,8 +111,10 @@ def _run_upscale_job(
 
 @router.get("/settings")
 def get_settings() -> JSONResponse:
+    has_api_key = bool(settings_store.get_credential("topaz_api_key") or os.getenv("TOPAZ_API_KEY", ""))
     return JSONResponse({
         "ok": True,
+        "has_api_key": has_api_key,
         "has_env_api_key": bool(os.getenv("TOPAZ_API_KEY", "")),
     })
 
@@ -113,7 +123,7 @@ def get_settings() -> JSONResponse:
 async def upscale(request: Request) -> JSONResponse:
     payload = await request.json()
     source_images = payload.get("source_images", [])
-    topaz_api_key = str(payload.get("topaz_api_key") or os.getenv("TOPAZ_API_KEY", ""))
+    topaz_api_key = _topaz_api_key(payload.get("topaz_api_key"))
     category = str(payload.get("category", "enhance"))
     model = str(payload.get("model", "Standard V2"))
     resolution_preset = str(payload.get("resolution_preset", "4k"))

@@ -10,6 +10,7 @@ import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card
 import { useSessionState } from '@/lib/use-session-state'
 import { ApprovalGate } from '@/components/civitai/approval-gate'
 import { BLOCKFLOW_DESCRIPTION, directBackendUrl } from '@/components/civitai/constants'
+import { getCredential } from '@/lib/settings/client'
 import { pickFiles } from '@/lib/file-picker'
 import {
   PORT_IMAGE,
@@ -107,13 +108,26 @@ function CivitAIShareBlock({
   hasUpstreamProducer,
 }: BlockComponentProps) {
   const [token, setTokenRaw] = useState(() => {
-    if (typeof window === 'undefined') return ''
-    return localStorage.getItem(TOKEN_KEY) ?? ''
+    return ''
   })
   const setToken = useCallback((v: string) => {
     setTokenRaw(v)
-    localStorage.setItem(TOKEN_KEY, v)
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const stored = await getCredential(TOKEN_KEY)
+        if (!cancelled && stored?.value) setToken(stored.value)
+      } catch {
+        // Non-fatal: users can still paste a key into this block.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [setToken])
 
   const [title, setTitle] = useSessionState(`block_${blockId}_title`, '')
   const [tags, setTags] = useSessionState(`block_${blockId}_tags`, 'wan2.2, ai video')
