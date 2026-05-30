@@ -71,6 +71,12 @@ function renderBlock() {
   )
 }
 
+function fetchUrl(input: string | URL | Request): string {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.toString()
+  return input.url
+}
+
 beforeEach(() => {
   vi.stubGlobal('localStorage', makeStorage())
   vi.stubGlobal('sessionStorage', makeStorage())
@@ -103,7 +109,8 @@ beforeEach(() => {
     ],
     recommendations: { global: [], workflows: {} },
   })
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    const url = fetchUrl(input)
     if (url.includes('/health')) return { json: async () => ({ ok: true }) }
     if (url.includes('/cache')) return { json: async () => ({ ok: true }) }
     if (url.includes('/parse-workflow')) {
@@ -127,7 +134,8 @@ beforeEach(() => {
 
 describe('ComfyGen preset refresh state', () => {
   test('shows the resolved comfy-gen CLI mode from health', async () => {
-    vi.mocked(fetch).mockImplementation(async (url: string) => {
+    vi.mocked(fetch).mockImplementation(async (input: string | URL | Request) => {
+      const url = fetchUrl(input)
       if (url.includes('/health')) {
         return { json: async () => ({ ok: true, mode: 'sidecar', path: '/tmp/blockflow/venv/bin/comfy-gen' }) } as Response
       }
