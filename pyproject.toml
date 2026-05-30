@@ -10,6 +10,7 @@ dependencies = [
     "loguru>=0.7",
     "curl_cffi>=0.7",
     "Pillow>=10",
+    "comfy-gen>=0.2,<0.3",
 ]
 
 [project.optional-dependencies]
