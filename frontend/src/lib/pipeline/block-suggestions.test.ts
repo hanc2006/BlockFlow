@@ -25,6 +25,7 @@ const knownTypes = [
   'videoLoader',
   'promptWriter',
   'promptFromTxt',
+  'gptImagePiapi',
   'nanoBanana2',
   'seedance',
   'upscale',
@@ -55,6 +56,7 @@ describe('block suggestions', () => {
       block('uploadImageToTmpfiles'),
       block('videoLoader'),
       block('promptWriter'),
+      block('gptImagePiapi'),
       block('nanoBanana2'),
     ]
 
@@ -63,6 +65,7 @@ describe('block suggestions', () => {
       'videoLoader',
       'promptWriter',
       'promptFromTxt',
+      'gptImagePiapi',
       'nanoBanana2',
       'seedance',
     ])

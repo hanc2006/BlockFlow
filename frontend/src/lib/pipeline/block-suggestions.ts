@@ -9,6 +9,7 @@ export const STARTER_SUGGESTIONS = [
   'videoLoader',
   'promptWriter',
   'promptFromTxt',
+  'gptImagePiapi',
   'nanoBanana2',
   'seedance',
 ] as const
@@ -16,6 +17,7 @@ export const STARTER_SUGGESTIONS = [
 export const SUGGESTED_NEXT_BY_TYPE: Record<string, readonly string[]> = {
   uploadImageToTmpfiles: [
     'nanoBanana2',
+    'gptImagePiapi',
     'i2vPromptWriter',
     'datasetCreate',
     'comfyGen',
@@ -23,9 +25,10 @@ export const SUGGESTED_NEXT_BY_TYPE: Record<string, readonly string[]> = {
     'imageViewer',
     'imageInspector',
   ],
-  imageUpscale: ['imageViewer', 'imageInspector', 'civitaiShare', 'seedance'],
-  nanoBanana2: ['imageUpscale', 'seedance', 'imageViewer', 'imageInspector', 'civitaiShare'],
-  comfyGen: ['imageUpscale', 'seedance', 'imageViewer', 'videoViewer', 'civitaiShare'],
+  imageUpscale: ['gptImagePiapi', 'imageViewer', 'imageInspector', 'civitaiShare', 'seedance'],
+  nanoBanana2: ['gptImagePiapi', 'imageUpscale', 'seedance', 'imageViewer', 'imageInspector', 'civitaiShare'],
+  gptImagePiapi: ['imageUpscale', 'seedance', 'imageViewer', 'imageInspector', 'civitaiShare'],
+  comfyGen: ['gptImagePiapi', 'imageUpscale', 'seedance', 'imageViewer', 'videoViewer', 'civitaiShare'],
   datasetCreate: ['datasetCaption', 'loraTrain', 'imageViewer'],
   datasetCaption: ['loraTrain'],
 
@@ -35,10 +38,10 @@ export const SUGGESTED_NEXT_BY_TYPE: Record<string, readonly string[]> = {
   videoFx: ['upscale', 'videoStitcher', 'videoViewer', 'civitaiShare'],
   videoStitcher: ['upscale', 'videoFx', 'videoViewer', 'civitaiShare'],
 
-  promptWriter: ['comfyGen', 'seedance', 'nanoBanana2', 'datasetCreate', 'elevenLabsTts'],
-  promptFromTxt: ['promptWriter', 'comfyGen', 'seedance', 'nanoBanana2', 'datasetCreate'],
-  i2vPromptWriter: ['seedance', 'comfyGen', 'datasetCreate'],
-  multimodalPromptWriter: ['seedance', 'nanoBanana2', 'comfyGen', 'datasetCreate'],
+  promptWriter: ['gptImagePiapi', 'comfyGen', 'seedance', 'nanoBanana2', 'datasetCreate', 'elevenLabsTts'],
+  promptFromTxt: ['promptWriter', 'gptImagePiapi', 'comfyGen', 'seedance', 'nanoBanana2', 'datasetCreate'],
+  i2vPromptWriter: ['gptImagePiapi', 'seedance', 'comfyGen', 'datasetCreate'],
+  multimodalPromptWriter: ['gptImagePiapi', 'seedance', 'nanoBanana2', 'comfyGen', 'datasetCreate'],
   elevenLabsTts: ['audioViewer', 'seedance', 'multimodalPromptWriter'],
 
   loraTrain: ['civitaiShare'],

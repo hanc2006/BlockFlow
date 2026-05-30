@@ -37,6 +37,7 @@ const CATEGORY_BY_TYPE: Record<string, BlockPickerCategory> = {
   imageViewer: 'image',
   imageInspector: 'image',
   imageUpscale: 'image',
+  gptImagePiapi: 'image',
   nanoBanana2: 'image',
   datasetCreate: 'image',
   comfyGen: 'image',
