@@ -159,6 +159,27 @@ describe('EndpointsTab — rendering', () => {
     expect(await screen.findByRole('heading', { name: /Set up ComfyGen endpoint/i })).toBeInTheDocument()
   })
 
+  test('ComfyGen Set up remains available when preflight reports missing credentials', async () => {
+    vi.mocked(client.listEndpoints).mockResolvedValue([])
+    vi.mocked(client.wizardPreflight).mockResolvedValueOnce({
+      ready: false,
+      missing: ['runpod_api_key', 'r2_bucket'],
+      services: {
+        runpod: { status: 'credentials_missing', validated_at: null, error: null, required: true },
+        r2: { status: 'credentials_missing', validated_at: null, error: null, required: true },
+      },
+    })
+    const user = userEvent.setup()
+    render(<EndpointsTab />)
+
+    const setUpButtons = await screen.findAllByRole('button', { name: /Set up/i })
+    expect(setUpButtons[0]).not.toBeDisabled()
+
+    await user.click(setUpButtons[0])
+
+    expect(await screen.findByRole('heading', { name: /Set up ComfyGen endpoint/i })).toBeInTheDocument()
+  })
+
   test('clicking trainer Set up shows the deferred-scaffolding placeholder', async () => {
     vi.mocked(client.listEndpoints).mockResolvedValue([])
     const user = userEvent.setup()

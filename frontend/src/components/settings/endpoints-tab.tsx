@@ -320,18 +320,13 @@ interface RowProps {
 
 function EndpointRow({ definition, record, loaded, preflight, onSetUp, onTearDown, onRecreate }: RowProps) {
   const configured = record !== null
-  // sgs-ui-5nn: gate Set up + Recreate on validated credentials. The wizard
-  // also surfaces its own preflight panel, but blocking at the button level
-  // means a user with missing creds doesn't open the wizard at all.
   const preflightReady = preflight?.ready === true
-  // Only meaningful for the ComfyGen row — the trainer wizard isn't shipping
-  // yet, so leave its placeholder button gating as-is.
   const gateOnPreflight = definition.type === 'comfygen'
-  const setUpBlocked = configured || (gateOnPreflight && !preflightReady)
+  const setUpBlocked = configured
   const setUpTitle = configured
     ? 'Already configured — tear down to reset'
-    : gateOnPreflight && !preflightReady
-    ? 'Validate credentials in Settings → Credentials first'
+    : gateOnPreflight && preflight && !preflightReady
+    ? 'Open the setup wizard to review missing credentials'
     : 'Launch the setup wizard'
   const recreateBlocked = !configured || (gateOnPreflight && !preflightReady)
   const recreateTitle = !configured
