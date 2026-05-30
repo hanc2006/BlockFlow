@@ -1558,9 +1558,29 @@ def refresh_installed_presets() -> dict[str, Any]:
                 "recommendations": _extract_recommendations(preset),
             }
             existing_detail = settings_store.get_installed_preset(preset_id) or {}
+            new_version = preset.get("comfygen_min_version", row.get("version") or "0.0.0")
+
+            # No-op guard: record_installed_preset() always stamps
+            # updated_at=now, and the ComfyGen block reads a newer updated_at
+            # as "preset changed upstream" (the 'Preset updated' drift badge).
+            # Since this refresh runs on every startup, writing unconditionally
+            # made the badge fire on every restart even when the registry
+            # content was byte-identical. Skip the write — and the timestamp
+            # bump — when nothing the user-visible blob/version actually changed.
+            existing_blob = None
+            existing_raw = existing_detail.get("workflow_json")
+            if existing_raw:
+                try:
+                    existing_blob = json.loads(existing_raw)
+                except (json.JSONDecodeError, TypeError):
+                    existing_blob = None
+            if existing_blob == stored_blob and existing_detail.get("version") == new_version:
+                result["skipped"].append({"preset_id": preset_id, "reason": "unchanged"})
+                continue
+
             settings_store.record_installed_preset(
                 preset_id=preset_id,
-                version=preset.get("comfygen_min_version", row.get("version") or "0.0.0"),
+                version=new_version,
                 disk_size_gb=preset.get("disk_size_estimate_gb", row.get("disk_size_gb")),
                 workflow_json=json.dumps(stored_blob),
                 # Preserve the canonical paths from the original install — a

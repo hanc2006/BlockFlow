@@ -963,7 +963,12 @@ function ComfyGenBlock({
   // workflows[].hidden_nodes — detection arrays for those node IDs are
   // dropped at the source so downstream consumers (panels, axes,
   // seed-randomization, /run override collection) never see them.
-  const parseWorkflow = useCallback(async (json: string, opts?: { hiddenNodes?: string[] }): Promise<'image' | 'video' | 'unknown' | ''> => {
+  const parseWorkflow = useCallback(async (json: string, opts?: { hiddenNodes?: string[]; preserveOverrides?: boolean }): Promise<'image' | 'video' | 'unknown' | ''> => {
+    // preserveOverrides (Reload of the SAME preset): keep the user's current
+    // value for any node that still exists, only filling in the preset default
+    // for brand-new nodes. Switching presets / first apply passes false so the
+    // incoming preset's values win.
+    const preserve = opts?.preserveOverrides ?? false
     try {
       const workflow = JSON.parse(json)
       const res = await fetch(PARSE_ENDPOINT, {
@@ -994,67 +999,84 @@ function ComfyGenBlock({
 
         const detectedKsamplers = dropHidden((data.ksamplers || []) as KSamplerInfo[], hidden)
         setKsamplers(detectedKsamplers)
-        const initOverrides: Record<string, KSamplerOverride> = {}
-        for (const ks of detectedKsamplers) {
-          initOverrides[ks.node_id] = {
-            steps: ks.steps != null ? String(ks.steps) : '',
-            cfg: ks.cfg != null ? String(ks.cfg) : '',
-            denoise: ks.denoise != null ? String(ks.denoise) : '',
-            sampler_name: ks.sampler_name ?? '',
-            scheduler: ks.scheduler ?? '',
+        setKsamplerOverrides((prev) => {
+          const next: Record<string, KSamplerOverride> = {}
+          for (const ks of detectedKsamplers) {
+            const def = {
+              steps: ks.steps != null ? String(ks.steps) : '',
+              cfg: ks.cfg != null ? String(ks.cfg) : '',
+              denoise: ks.denoise != null ? String(ks.denoise) : '',
+              sampler_name: ks.sampler_name ?? '',
+              scheduler: ks.scheduler ?? '',
+            }
+            next[ks.node_id] = preserve && prev[ks.node_id] ? prev[ks.node_id] : def
           }
-        }
-        setKsamplerOverrides(initOverrides)
+          return next
+        })
 
         const detectedTextOverrides = dropHidden((data.text_overrides || []) as TextOverrideInfo[], hidden)
         setTextOverrides(detectedTextOverrides)
-        const initTextValues: Record<string, string> = {}
-        for (const to of detectedTextOverrides) {
-          initTextValues[`${to.node_id}.${to.input_name}`] = to.current_value
-        }
-        setTextValues(initTextValues)
+        setTextValues((prev) => {
+          const next: Record<string, string> = {}
+          for (const to of detectedTextOverrides) {
+            const key = `${to.node_id}.${to.input_name}`
+            next[key] = preserve && prev[key] !== undefined ? prev[key] : to.current_value
+          }
+          return next
+        })
 
         const detectedResNodes = dropHidden((data.resolution_nodes || []) as ResolutionNodeInfo[], hidden)
         setResolutionNodes(detectedResNodes)
-        const initResOverrides: Record<string, { width: string; height: string }> = {}
-        for (const rn of detectedResNodes) {
-          initResOverrides[rn.node_id] = {
-            width: rn.width != null ? String(rn.width) : '',
-            height: rn.height != null ? String(rn.height) : '',
+        setResolutionOverrides((prev) => {
+          const next: Record<string, { width: string; height: string }> = {}
+          for (const rn of detectedResNodes) {
+            const def = {
+              width: rn.width != null ? String(rn.width) : '',
+              height: rn.height != null ? String(rn.height) : '',
+            }
+            next[rn.node_id] = preserve && prev[rn.node_id] ? prev[rn.node_id] : def
           }
-        }
-        setResolutionOverrides(initResOverrides)
+          return next
+        })
 
         const detectedFrames = dropHidden((data.frame_counts || []) as FrameCountInfo[], hidden)
         setFrameCounts(detectedFrames)
-        const initFrameOverrides: Record<string, string> = {}
-        for (const fc of detectedFrames) {
-          initFrameOverrides[fc.node_id] = String(fc.value)
-        }
-        setFrameOverrides(initFrameOverrides)
+        setFrameOverrides((prev) => {
+          const next: Record<string, string> = {}
+          for (const fc of detectedFrames) {
+            next[fc.node_id] = preserve && prev[fc.node_id] !== undefined ? prev[fc.node_id] : String(fc.value)
+          }
+          return next
+        })
 
         const detectedRefVideo = dropHidden((data.ref_video || []) as RefVideoInfo[], hidden)
         setRefVideo(detectedRefVideo)
-        const initRefOverrides: Record<string, string> = {}
-        for (const rv of detectedRefVideo) {
-          for (const ctrl of rv.controls) {
-            initRefOverrides[`${rv.node_id}.${ctrl.field}`] = String(ctrl.value)
+        setRefVideoOverrides((prev) => {
+          const next: Record<string, string> = {}
+          for (const rv of detectedRefVideo) {
+            for (const ctrl of rv.controls) {
+              const key = `${rv.node_id}.${ctrl.field}`
+              next[key] = preserve && prev[key] !== undefined ? prev[key] : String(ctrl.value)
+            }
           }
-        }
-        setRefVideoOverrides(initRefOverrides)
+          return next
+        })
 
         const detectedLoras = dropHidden((data.lora_nodes || []) as LoraNodeInfo[], hidden)
         setLoraNodes(detectedLoras)
-        const initLoraOverrides: Record<string, LoraOverride> = {}
-        for (const ln of detectedLoras) {
-          initLoraOverrides[ln.node_id] = {
-            lora_name: ln.lora_name,
-            strength_model: ln.strength_model != null ? String(ln.strength_model) : '1',
-            strength_clip: ln.strength_clip != null ? String(ln.strength_clip) : '1',
-            enabled: true,
+        setLoraOverrides((prev) => {
+          const next: Record<string, LoraOverride> = {}
+          for (const ln of detectedLoras) {
+            const def = {
+              lora_name: ln.lora_name,
+              strength_model: ln.strength_model != null ? String(ln.strength_model) : '1',
+              strength_clip: ln.strength_clip != null ? String(ln.strength_clip) : '1',
+              enabled: true,
+            }
+            next[ln.node_id] = preserve && prev[ln.node_id] ? prev[ln.node_id] : def
           }
-        }
-        setLoraOverrides(initLoraOverrides)
+          return next
+        })
         // Drop any added LoRAs whose anchor node no longer exists in the reloaded workflow
         const detectedIds = new Set(detectedLoras.map((ln) => ln.node_id))
         setAddedLoras((prev) => prev.filter((a) => detectedIds.has(a.chain_anchor)))
@@ -1232,7 +1254,7 @@ function ComfyGenBlock({
   // sgs-ui-chf: presetSelection encodes "<preset_id>::<workflow_index>" so the
   // dropdown can show one entry per (preset, workflow) pair without changing
   // shadcn Select's single-string value contract.
-  const handleApplyPreset = useCallback(async (selection: string) => {
+  const handleApplyPreset = useCallback(async (selection: string, opts?: { preserveOverrides?: boolean }) => {
     if (!selection) return
     const { presetId, workflowIdx } = parsePresetSelection(selection)
     setPresetApplyError('')
@@ -1264,7 +1286,7 @@ function ComfyGenBlock({
       // doesn't end up with two UIs for the same field.
       setWorkflowSettings(Array.isArray(chosen.settings) ? chosen.settings : [])
       setHiddenNodes(Array.isArray(chosen.hidden_nodes) ? chosen.hidden_nodes : [])
-      const detectedType = await parseWorkflow(json, { hiddenNodes: chosen.hidden_nodes })
+      const detectedType = await parseWorkflow(json, { hiddenNodes: chosen.hidden_nodes, preserveOverrides: opts?.preserveOverrides })
       if (detectedType === 'image' || detectedType === 'video') {
         setOutput(detectedType, makePendingOutput(detectedType))
       }
@@ -2068,7 +2090,7 @@ function ComfyGenBlock({
                 title={presetNeedsReload
                   ? 'Installed preset metadata changed. Reload this workflow from the refreshed preset.'
                   : 'Reload this workflow from the installed preset.'}
-                onClick={() => handleApplyPreset(selectedPresetId)}
+                onClick={() => handleApplyPreset(selectedPresetId, { preserveOverrides: true })}
                 disabled={presetApplying}
                 className={`h-8 shrink-0 px-2 gap-1 border ${
                   presetNeedsReload

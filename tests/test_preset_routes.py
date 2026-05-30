@@ -1209,6 +1209,109 @@ def test_refresh_installed_presets_updates_workflow_blob(client):
     assert raw["installed_paths"] == ["/runpod-volume/ComfyUI/models/loras/some.safetensors"]
 
 
+def test_refresh_installed_presets_unchanged_blob_preserves_updated_at(client, monkeypatch):
+    """Regression: a no-op refresh (registry content byte-identical to what's
+    already stored) must NOT bump updated_at. record_installed_preset always
+    stamps updated_at=now, and the ComfyGen block reads a newer updated_at as
+    "preset changed" (the yellow 'Preset updated' drift badge). Since this
+    refresh runs on every app startup, an unconditional write made the badge
+    fire after every restart — and most visibly after restoring an artifact —
+    even though nothing actually changed."""
+    preset = {
+        **QWEN_FULL_PRESET,
+        "id": "wan-animate",
+        "workflows": [{
+            "name": "Replace Face",
+            "url": "https://example/rf.json",
+            "sha256": "0" * 64,
+        }],
+        "recommendations": {"global": [], "workflows": {}},
+    }
+    workflow_body = {"3": {"class_type": "WanAnimate"}}
+
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([
+                {**_qwen_preset_entry(), "id": "wan-animate", "preset_url": "https://example/preset.json"},
+            ]))
+        if "preset.json" in url:
+            return _mock_response(preset)
+        if "rf.json" in url:
+            return _mock_response(workflow_body)
+        return _mock_response({}, status=404)
+
+    import unittest.mock as _mock
+
+    # Seed a row, then do a first refresh so the stored blob matches exactly
+    # what the registry mock produces.
+    settings_store.record_installed_preset(
+        preset_id="wan-animate", version="0.0.0", disk_size_gb=1,
+        workflow_json=json.dumps({"workflows": [], "recommendations": {}}),
+        installed_paths=["/keep/me.safetensors"],
+    )
+    with _mock.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get):
+        preset_routes.refresh_installed_presets()
+    first_updated_at = settings_store.get_installed_preset("wan-animate")["updated_at"]
+
+    # Advance the clock and refresh AGAIN with identical registry content.
+    monkeypatch.setattr(settings_store, "_now", lambda: "2099-01-01T00:00:00+00:00")
+    with _mock.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get):
+        summary = preset_routes.refresh_installed_presets()
+
+    after = settings_store.get_installed_preset("wan-animate")
+    # No write happened → updated_at frozen at the real last-change time.
+    assert after["updated_at"] == first_updated_at
+    assert after["updated_at"] != "2099-01-01T00:00:00+00:00"
+    # Reported as unchanged, not refreshed.
+    assert "wan-animate" not in {r["preset_id"] for r in summary["refreshed"]}
+    assert any(
+        s["preset_id"] == "wan-animate" and s["reason"] == "unchanged"
+        for s in summary["skipped"]
+    )
+    # installed_paths still intact — the skip path must not touch the row.
+    assert after["installed_paths"] == ["/keep/me.safetensors"]
+
+
+def test_refresh_installed_presets_changed_blob_bumps_updated_at(client, monkeypatch):
+    """Control for the no-op skip: when the registry content genuinely differs
+    from what's stored, updated_at DOES advance and the preset is refreshed."""
+    settings_store.record_installed_preset(
+        preset_id="wan-animate", version="0.2.0", disk_size_gb=50,
+        workflow_json=json.dumps({
+            "workflows": [{"name": "Replace Face", "json": {"3": {"class_type": "Old"}}}],
+            "recommendations": {"global": [], "workflows": {}},
+        }),
+        installed_paths=["/x.safetensors"],
+    )
+    preset = {
+        **QWEN_FULL_PRESET,
+        "id": "wan-animate",
+        "workflows": [{"name": "Replace Face", "url": "https://example/rf.json", "sha256": "0" * 64}],
+        "recommendations": {"global": [], "workflows": {}},
+    }
+    new_body = {"3": {"class_type": "WanAnimate"}}  # different content
+
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([
+                {**_qwen_preset_entry(), "id": "wan-animate", "preset_url": "https://example/preset.json"},
+            ]))
+        if "preset.json" in url:
+            return _mock_response(preset)
+        if "rf.json" in url:
+            return _mock_response(new_body)
+        return _mock_response({}, status=404)
+
+    import unittest.mock as _mock
+    monkeypatch.setattr(settings_store, "_now", lambda: "2099-01-01T00:00:00+00:00")
+    with _mock.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get):
+        summary = preset_routes.refresh_installed_presets()
+
+    after = settings_store.get_installed_preset("wan-animate")
+    assert after["updated_at"] == "2099-01-01T00:00:00+00:00"
+    assert "wan-animate" in {r["preset_id"] for r in summary["refreshed"]}
+
+
 def test_refresh_installed_presets_skips_presets_not_in_manifest(client):
     """A preset that was archived from the registry stays in Settings — we
     don't silently uninstall on the user's behalf."""

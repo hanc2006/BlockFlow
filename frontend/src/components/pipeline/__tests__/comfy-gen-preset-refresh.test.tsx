@@ -203,6 +203,59 @@ describe('ComfyGen preset refresh state', () => {
     expect(sessionStorage.getItem('block_b1_workflow')).toContain('FreshNode')
   })
 
+  test('reloading a preset preserves user override values for surviving nodes', async () => {
+    // User has edited the prompt + resolution on an applied preset.
+    sessionStorage.setItem('block_b1_selected_preset', JSON.stringify('preset-a::0'))
+    sessionStorage.setItem('block_b1_preset_applied_updated_at', JSON.stringify('2026-05-27T05:00:00+00:00'))
+    sessionStorage.setItem('block_b1_workflow', JSON.stringify(JSON.stringify({ '1': { class_type: 'OldNode', inputs: {} } })))
+    sessionStorage.setItem('block_b1_text_values', JSON.stringify({ '6.text': 'MY EDITED PROMPT' }))
+    sessionStorage.setItem('block_b1_resolution_overrides', JSON.stringify({ '5': { width: '768', height: '512' } }))
+
+    // The refreshed preset's parse surfaces the same nodes (6, 5) with the
+    // preset's OWN defaults, plus a brand-new node (9) the user never touched.
+    vi.mocked(fetch).mockImplementation(async (input: string | URL | Request) => {
+      const url = fetchUrl(input)
+      if (url.includes('/parse-workflow')) {
+        return {
+          json: async () => ({
+            ok: true,
+            load_nodes: [],
+            ksamplers: [],
+            text_overrides: [{ node_id: '6', input_name: 'text', current_value: 'PRESET DEFAULT PROMPT' }],
+            resolution_nodes: [{ node_id: '5', class_type: 'EmptyLatent', label: 'res', category: 'latent', width: 1024, height: 1024 }],
+            frame_counts: [{ node_id: '9', class_type: 'Frames', label: 'frames', value: 81 }],
+            ref_video: [],
+            lora_nodes: [],
+            output_type: 'image',
+          }),
+        } as Response
+      }
+      return { json: async () => ({ ok: true }) } as Response
+    })
+
+    const user = userEvent.setup()
+    renderBlock()
+
+    const reload = await screen.findByRole('button', { name: /reload preset/i })
+    await user.click(reload)
+
+    await waitFor(() => {
+      expect(settingsMocks.getInstalledPreset).toHaveBeenCalledWith('preset-a')
+    })
+
+    // Surviving nodes keep the USER's values, not the preset's defaults.
+    await waitFor(() => {
+      const text = JSON.parse(sessionStorage.getItem('block_b1_text_values') as string)
+      expect(text['6.text']).toBe('MY EDITED PROMPT')
+    })
+    const res = JSON.parse(sessionStorage.getItem('block_b1_resolution_overrides') as string)
+    expect(res['5']).toEqual({ width: '768', height: '512' })
+
+    // A node the user never overrode adopts the preset default.
+    const frames = JSON.parse(sessionStorage.getItem('block_b1_frame_overrides') as string)
+    expect(frames['9']).toBe('81')
+  })
+
   test('shows neutral reload control without stale messaging when the selected preset is already current', async () => {
     sessionStorage.setItem('block_b1_selected_preset', JSON.stringify('preset-a::0'))
     sessionStorage.setItem('block_b1_preset_applied_updated_at', JSON.stringify('2026-05-27T06:00:00+00:00'))
