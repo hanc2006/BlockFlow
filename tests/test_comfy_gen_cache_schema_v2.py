@@ -52,6 +52,8 @@ from backend import config, lora_routes, settings_store  # noqa: E402
 def cache_path(tmp_path, monkeypatch):
     p = tmp_path / "comfy_gen_info_cache.json"
     monkeypatch.setattr(config, "COMFY_GEN_INFO_CACHE_PATH", p)
+    monkeypatch.setattr(settings_store, "DB_PATH", tmp_path / "settings.db")
+    settings_store.init_db()
     # The module imported its own reference at load time; patch that too.
     monkeypatch.setattr(mod.config, "COMFY_GEN_INFO_CACHE_PATH", p)
     # Reset in-memory cache between tests.
@@ -155,6 +157,9 @@ def test_save_roundtrip(cache_path):
 def test_refresh_stores_lora_objects_with_path_and_size(cache_path, monkeypatch):
     """When `comfy-gen info` returns rich lora objects, the cache stores
     the full shape — not just filenames."""
+    settings_store.init_db()
+    settings_store.set_credential("runpod_api_key", "rpa_refresh_schema")
+    settings_store.set_endpoint("comfygen", endpoint_id="ep_refresh_schema", volume_id="vol")
     info_payload = {
         "ok": True,
         "samplers": ["euler"],

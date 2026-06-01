@@ -131,6 +131,8 @@ def test_sync_shells_out_and_refreshes_cache(client, monkeypatch, tmp_path) -> N
 
 
 def test_fetch_loras_uses_resolved_sidecar_command(monkeypatch, tmp_path) -> None:
+    _configure_endpoint()
+    settings_store.set_credential("runpod_api_key", "rpa_sidecar")
     sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")

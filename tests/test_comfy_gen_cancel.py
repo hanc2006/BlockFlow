@@ -52,11 +52,15 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def reset_jobs(monkeypatch):
-    """Each test gets a clean JOBS dict + lock."""
+def reset_jobs_and_settings(monkeypatch, tmp_path):
+    """Each test gets clean job state and isolated Settings credentials."""
     from backend import state
     monkeypatch.setattr(state, "JOBS", {})
     monkeypatch.setattr(state, "JOBS_LOCK", threading.Lock())
+    monkeypatch.setattr(settings_store, "DB_PATH", tmp_path / "settings.db")
+    settings_store.init_db()
+    settings_store.set_credential("runpod_api_key", "rpa_cancel_test")
+    settings_store.set_endpoint("comfygen", endpoint_id="ep_test", volume_id="vol")
     yield
 
 

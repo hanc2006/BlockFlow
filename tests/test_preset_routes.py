@@ -575,6 +575,10 @@ def _wait_for_install_state(*targets: str, attempts: int = 200, sleep_s: float =
 
 
 def test_delete_paths_uses_resolved_sidecar_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings_store, "DB_PATH", tmp_path / "preset_sidecar.db")
+    settings_store.init_db()
+    settings_store.set_credential("runpod_api_key", "rpa_sidecar")
+    settings_store.set_endpoint("comfygen", endpoint_id="ep-sidecar", volume_id="vol")
     sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
