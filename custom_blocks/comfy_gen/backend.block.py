@@ -2423,6 +2423,31 @@ async def parse_workflow(request: Request) -> JSONResponse:
     })
 
 
+def _find_model_root_anchors(workflow: dict) -> dict[str, int]:
+    """Find base model loader nodes usable as seed anchors for the first LoRA.
+
+    A model root is a node that some other node consumes via a `model` input but
+    that has no `model` input of its own — i.e. a loader (UNETLoader,
+    CheckpointLoader, GGUF unet loader, ...) that produces MODEL without
+    consuming one. Returns {node_id: model_output_index}.
+    """
+    roots: dict[str, int] = {}
+    for node in workflow.values():
+        if not isinstance(node, dict):
+            continue
+        m = node.get("inputs", {}).get("model")
+        if not (isinstance(m, list) and len(m) >= 2):
+            continue
+        src_id = str(m[0])
+        src = workflow.get(src_id)
+        if not isinstance(src, dict):
+            continue
+        if "model" in (src.get("inputs") or {}):
+            continue  # not a root — it consumes a model itself
+        roots.setdefault(src_id, int(m[1]))
+    return roots
+
+
 def _resolve_added_loras(workflow: dict, added: list[dict]) -> tuple[list[dict] | None, str | None]:
     """Validate + auto-anchor runtime-added LoRAs before insertion. Returns
     (resolved, None) on success or (None, error). Fails loud instead of letting
@@ -2436,24 +2461,33 @@ def _resolve_added_loras(workflow: dict, added: list[dict]) -> tuple[list[dict] 
     # node_id -> class_type for the regular (anchorable) loaders only.
     anchors = {n["node_id"]: n.get("class_type")
                for n in _detect_lora_nodes(workflow) if "lora_key" not in n}
+    # Base model loaders (UNETLoader/CheckpointLoader/...) are valid seed anchors
+    # too: with no existing LoRA loader, the first added LoRA splices right after
+    # the model loader so it still applies to the model the sampler consumes.
+    model_roots = _find_model_root_anchors(workflow)
+    valid = {**anchors, **{nid: None for nid in model_roots}}
     resolved: list[dict] = []
     for entry in added:
         anchor = str(entry.get("chain_anchor") or entry.get("anchor") or "").strip()
         if not anchor:
-            if not anchors:
-                return None, ("Cannot add LoRA: this workflow has no LoRA loader to "
-                              "anchor onto. Add a LoRA node in the workflow first.")
-            anchor = next(iter(anchors))
-        if anchor not in anchors:
-            avail = ", ".join(anchors) or "none"
-            return None, (f"LoRA anchor '{anchor}' is not a LoRA loader node in this "
-                          f"workflow. Valid anchors: {avail}.")
+            # Prefer an existing LoRA chain; fall back to the base model loader.
+            if anchors:
+                anchor = next(iter(anchors))
+            elif model_roots:
+                anchor = next(iter(model_roots))
+            else:
+                return None, ("Cannot add LoRA: this workflow has no LoRA loader or "
+                              "model loader to anchor onto.")
+        if anchor not in valid:
+            avail = ", ".join(valid) or "none"
+            return None, (f"LoRA anchor '{anchor}' is not a LoRA or model loader node "
+                          f"in this workflow. Valid anchors: {avail}.")
         lora_name = str(entry.get("lora_name") or "").strip()
         if not lora_name:
             return None, "Each added LoRA needs a non-empty lora_name."
         out = {
             "chain_anchor": anchor,
-            "class_type": entry.get("class_type") or anchors[anchor] or "LoraLoaderModelOnly",
+            "class_type": entry.get("class_type") or anchors.get(anchor) or "LoraLoaderModelOnly",
             "lora_name": lora_name,
             "strength_model": entry.get("strength_model", 1.0),
         }
@@ -2501,10 +2535,17 @@ def _insert_lora_nodes(workflow: dict, added: list[dict]) -> dict:
         if anchor not in workflow:
             continue
         anchor_node = workflow[anchor]
-        if not isinstance(anchor_node, dict) or anchor_node.get("class_type") not in _LORA_CLASS_TYPES:
+        if not isinstance(anchor_node, dict):
+            continue
+        anchor_class = anchor_node.get("class_type")
+        # Anchor may be a LoRA loader (stack onto the chain) or a base model
+        # loader (seed the first LoRA right after it).
+        if anchor_class not in _LORA_CLASS_TYPES and anchor not in _find_model_root_anchors(workflow):
             continue
         tail_id = _walk_to_tail(anchor)
-        class_type = entry.get("class_type") or anchor_node.get("class_type")
+        class_type = entry.get("class_type") or (
+            anchor_class if anchor_class in _LORA_CLASS_TYPES else "LoraLoaderModelOnly"
+        )
         new_id = _alloc_id()
         new_inputs: dict[str, object] = {
             "lora_name": entry.get("lora_name", ""),
