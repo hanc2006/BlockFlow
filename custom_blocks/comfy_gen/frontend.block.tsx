@@ -209,6 +209,28 @@ interface AddedLora {
   strength_clip: string
 }
 
+/**
+ * Base model loaders (UNETLoader/CheckpointLoader/...) usable as seed anchors
+ * for the first added LoRA when a workflow has no LoRA loader of its own: a node
+ * consumed via some other node's `model` input that has no `model` input itself.
+ * Mirrors the backend's _find_model_root_anchors. Returns node_id -> class_type.
+ */
+export function findModelRootIds(workflow: unknown): Map<string, string> {
+  const roots = new Map<string, string>()
+  if (!workflow || typeof workflow !== 'object') return roots
+  const nodes = workflow as Record<string, { class_type?: string; inputs?: Record<string, unknown> }>
+  for (const node of Object.values(nodes)) {
+    const m = node?.inputs?.model
+    if (!Array.isArray(m) || m.length < 2) continue
+    const srcId = String(m[0])
+    const src = nodes[srcId]
+    if (!src || typeof src !== 'object') continue
+    if (src.inputs && 'model' in src.inputs) continue
+    if (!roots.has(srcId)) roots.set(srcId, src.class_type ?? '')
+  }
+  return roots
+}
+
 const CHAIN_COLORS = [
   { badge: 'bg-emerald-600/30 text-emerald-200 border-emerald-500/40', border: 'border-l-emerald-500/60' },
   { badge: 'bg-violet-600/30 text-violet-200 border-violet-500/40', border: 'border-l-violet-500/60' },
@@ -1152,9 +1174,12 @@ function ComfyGenBlock({
           }
           return next
         })
-        // Drop any added LoRAs whose anchor node no longer exists in the reloaded workflow
+        // Drop any added LoRAs whose anchor node no longer exists in the reloaded
+        // workflow. A valid anchor is a detected LoRA node OR a base model loader
+        // (the seed anchor for no-LoRA workflows).
         const detectedIds = new Set(detectedLoras.map((ln) => ln.node_id))
-        setAddedLoras((prev) => prev.filter((a) => detectedIds.has(a.chain_anchor)))
+        const modelRootIds = findModelRootIds(workflow)
+        setAddedLoras((prev) => prev.filter((a) => detectedIds.has(a.chain_anchor) || modelRootIds.has(a.chain_anchor)))
 
         const otype = (data.output_type as string) || 'unknown'
         setOutputType(otype)
@@ -1318,7 +1343,8 @@ function ComfyGenBlock({
           return merged
         })
         const detectedIds2 = new Set(detectedLoras2.map((ln) => ln.node_id))
-        setAddedLoras((prev) => prev.filter((a) => detectedIds2.has(a.chain_anchor)))
+        const modelRootIds2 = findModelRootIds(workflow)
+        setAddedLoras((prev) => prev.filter((a) => detectedIds2.has(a.chain_anchor) || modelRootIds2.has(a.chain_anchor)))
 
         const otype2 = (data.output_type as string) || 'unknown'
         setOutputType(otype2)
@@ -1544,6 +1570,20 @@ function ComfyGenBlock({
     () => extractWorkflowSettingDefaults(workflowJson, workflowSettings),
     [workflowJson, workflowSettings],
   )
+
+  // Seed anchor for adding the FIRST LoRA to a workflow that ships none: the
+  // base model loader. Lets "Add LoRA" work on clean no-LoRA presets (the
+  // backend splices the new loader right after this node). Null if unparseable.
+  const loraSeedAnchor = useMemo(() => {
+    if (!workflowJson.trim()) return null
+    try {
+      const roots = findModelRootIds(JSON.parse(workflowJson))
+      const first = roots.entries().next().value
+      return first ? { node_id: first[0], class_type: first[1] } : null
+    } catch {
+      return null
+    }
+  }, [workflowJson])
 
   // Active scope key for the per-(preset, workflow) override map. Empty when
   // no preset is selected → panel is hidden, so the key is irrelevant.
@@ -2655,7 +2695,7 @@ function ComfyGenBlock({
       )}
 
       {/* LoRA overrides — grouped by chain */}
-      {loraNodes.length > 0 && (() => {
+      {(loraNodes.length > 0 || loraSeedAnchor) && (() => {
         // Group loraNodes by chain_id (fallback 0 for legacy data without chain_id)
         const chainsMap = new Map<number, LoraNodeInfo[]>()
         for (const ln of loraNodes) {
@@ -2664,7 +2704,15 @@ function ComfyGenBlock({
           arr.push(ln)
           chainsMap.set(cid, arr)
         }
-        const chains = Array.from(chainsMap.entries()).sort((a, b) => a[0] - b[0])
+        // No LoRA loaders → synthesize one empty chain anchored on the base model
+        // loader so the existing "Add LoRA" path can seed the first LoRA onto it.
+        const seedTail: LoraNodeInfo | null = (loraNodes.length === 0 && loraSeedAnchor)
+          ? { node_id: loraSeedAnchor.node_id, class_type: loraSeedAnchor.class_type,
+              label: 'Base model', lora_name: '', is_power: false }
+          : null
+        const chains: [number, LoraNodeInfo[]][] = seedTail
+          ? [[0, []]]
+          : Array.from(chainsMap.entries()).sort((a, b) => a[0] - b[0])
         const addedPowerCount = Object.values(powerLoraOverrides).filter((v) => v.add).length
         const enabledCount = loraNodes.filter((ln) => {
           if (ln.is_power && ln.lora_key) {
@@ -2902,7 +2950,7 @@ function ComfyGenBlock({
            <div className={dense ? 'space-y-2 max-h-[360px] overflow-y-auto pr-1' : 'space-y-2'}>
             {chains.map(([cid, chainNodes], chainIndex) => {
               const colors = CHAIN_COLORS[cid % CHAIN_COLORS.length]
-              const tail = chainNodes[chainNodes.length - 1]
+              const tail = chainNodes[chainNodes.length - 1] ?? seedTail!
               const chainOpen = !showChainBadges || (expandedChains[cid] ?? (!dense || chainIndex === 0))
               const addedForChain = addedLoras.filter((a) => a.chain_anchor === tail.node_id)
               const addLora = () => {
