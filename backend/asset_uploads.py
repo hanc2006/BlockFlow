@@ -9,7 +9,7 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from backend import settings_store
+from backend import settings_store, tmpfiles
 
 ASSET_STORAGE_MODE_PREF = "asset_storage_mode"
 ASSET_STORAGE_MODES = {"local_only", "tmpfiles", "r2_signed"}
@@ -76,7 +76,7 @@ def _upload_to_tmpfiles(data: bytes, filename: str, content_type: str) -> str:
         raise RuntimeError(f"tmpfiles upload failed: {resp_data}")
     if "tmpfiles.org/" in url and "/dl/" not in url:
         url = url.replace("tmpfiles.org/", "tmpfiles.org/dl/", 1)
-    return url
+    return tmpfiles.resolve_tokenized_url(url)
 
 
 def _r2_credentials() -> dict[str, str]:

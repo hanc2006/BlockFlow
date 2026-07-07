@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 from pathlib import Path
 
 TMPFILES_UPLOAD_URL = "https://tmpfiles.org/api/v1/upload"
+
+# tmpfiles.org direct links are now /dl/<timestamp>.<token>/<id>/<file>;
+# the tokenless /dl/<id>/<file> path serves an HTML preview page instead.
+_TOKENIZED_DL_RE = re.compile(r"https://tmpfiles\.org/dl/\d+\.[0-9a-f]+/[^\s\"'<>]+")
 
 MIME_TYPES = {
     ".png": "image/png",
@@ -71,7 +76,34 @@ def upload_to_tmpfiles(file_path: Path) -> str:
     if "tmpfiles.org/" in url and "/dl/" not in url:
         url = url.replace("tmpfiles.org/", "tmpfiles.org/dl/", 1)
 
-    return url
+    return resolve_tokenized_url(url)
+
+
+def resolve_tokenized_url(url: str) -> str:
+    """Resolve a tmpfiles.org /dl/ URL to the tokenized direct-download URL.
+
+    tmpfiles.org stopped serving files at /dl/<id>/<file> — that path now returns
+    an HTML preview page containing the real (tokenized, ~1h-lived) download link.
+    Fetch the page and scrape that link out. Falls back to the input URL if
+    anything goes wrong (downstream would have failed the same way anyway).
+    """
+    if "tmpfiles.org/dl/" not in url or _TOKENIZED_DL_RE.match(url):
+        return url
+
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0 (compatible; SGS-UI/1.0)"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content_type = resp.headers.get("Content-Type") or ""
+            if "text/html" not in content_type:
+                return url  # still serves the file directly
+            page = resp.read(262144).decode("utf-8", errors="replace")
+    except OSError:
+        return url
+
+    match = _TOKENIZED_DL_RE.search(page)
+    return match.group(0) if match else url
 
 
 def ensure_public_url(url: str) -> str:
