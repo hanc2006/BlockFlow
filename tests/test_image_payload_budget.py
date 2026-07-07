@@ -147,18 +147,22 @@ def test_tmpfiles_upload_compresses_large_image_before_external_post(
     captured: dict[str, Any] = {}
 
     class FakeResponse:
+        # non-HTML Content-Type so resolve_tokenized_url() passes the URL through
+        headers = {"Content-Type": "application/json"}
+
         def __enter__(self):
             return self
 
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self) -> bytes:
+        def read(self, n: int = -1) -> bytes:
             return json.dumps({"status": "success", "data": {"url": "https://tmpfiles.org/abc/ref.jpg"}}).encode()
 
     def fake_urlopen(req: urllib.request.Request, timeout: int = 60):
-        captured["data"] = req.data
-        captured["headers"] = dict(req.header_items())
+        if req.data is not None:  # capture the upload POST, not the resolver's GET
+            captured["data"] = req.data
+            captured["headers"] = dict(req.header_items())
         return FakeResponse()
 
     monkeypatch.setattr(asset_uploads.urllib.request, "urlopen", fake_urlopen)
