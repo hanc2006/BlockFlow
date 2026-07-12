@@ -2296,7 +2296,8 @@ def _upsert_mcp_batch_run(batch_id: str, job_id: str, url: str, meta: dict[str, 
                     "metadata": {"kind": "metadata", "value": [meta]},
                 },
             }],
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            # UTC-Z to match pipeline runs — the gallery text-sorts created_at
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         db.save_run(run)
 

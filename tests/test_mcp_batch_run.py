@@ -88,6 +88,18 @@ def test_publish_event_delivers_cross_thread():
     assert asyncio.run(run()) == {"type": "mcp", "phase": "end"}
 
 
+def test_created_at_is_utc_z(temp_db):
+    """Regression: naive-local created_at sorted MCP runs above NEWER pipeline runs
+    (which write UTC-Z) in the gallery's text ORDER BY created_at DESC."""
+    from datetime import datetime, timezone
+
+    cg._upsert_mcp_batch_run("b6", "j1", "/outputs/a.png", _meta(1))
+    ts = db.get_run("run-mcp-b6")["created_at"]
+    assert ts.endswith("Z"), f"expected UTC-Z timestamp, got {ts!r}"
+    parsed = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    assert abs((datetime.now(timezone.utc) - parsed).total_seconds()) < 60
+
+
 def test_video_url_uses_video_port(temp_db):
     cg._upsert_mcp_batch_run("b4", "j1", "/outputs/clip.mp4", _meta(1))
     out = db.get_run("run-mcp-b4")["block_results"][0]["outputs"]
