@@ -180,12 +180,14 @@ def api_runs_list(
     q: str | None = Query(None),
     hide_partial: bool = Query(False),
     source: str | None = Query(None),
+    set_id: str | None = Query(None),
 ) -> JSONResponse:
     mk = media_kind if media_kind in ("video", "image", "dataset", "lora", "other") else None
     pq = q.strip() if q and q.strip() else None
     src = source if source in ("mcp", "pipeline") else None
-    total = db.count_runs(favorited_only=favorited, media_kind=mk, prompt_query=pq, hide_partial=hide_partial, source=src)
-    runs = db.list_runs(limit=limit, offset=offset, favorited_only=favorited, media_kind=mk, prompt_query=pq, hide_partial=hide_partial, source=src)
+    sid = set_id.strip() if set_id and set_id.strip() else None
+    total = db.count_runs(favorited_only=favorited, media_kind=mk, prompt_query=pq, hide_partial=hide_partial, source=src, set_id=sid)
+    runs = db.list_runs(limit=limit, offset=offset, favorited_only=favorited, media_kind=mk, prompt_query=pq, hide_partial=hide_partial, source=src, set_id=sid)
     return JSONResponse({"ok": True, "runs": runs, "total": total, "limit": limit, "offset": offset})
 
 
@@ -342,3 +344,80 @@ def api_prompt_library_delete(prompt_id: str) -> JSONResponse:
             return JSONResponse({"ok": False, "error": "prompt not found"}, status_code=404)
         _write_prompt_library(new_prompts)
     return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Sets — named, mutable collections of generated images/videos
+#
+# Membership is by output URL, so a set doubles as an Artifacts filter
+# (/api/runs?set_id=...). Storage lives in the run-history DB (backend/db.py).
+# ---------------------------------------------------------------------------
+
+
+def _set_not_found() -> JSONResponse:
+    return JSONResponse({"ok": False, "error": "set not found"}, status_code=404)
+
+
+def _set_name(payload: dict[str, Any]) -> str | None:
+    name = payload.get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
+@router.get("/api/sets")
+def api_sets_list() -> JSONResponse:
+    return JSONResponse({"ok": True, "sets": db.list_sets()})
+
+
+@router.post("/api/sets")
+def api_sets_create(payload: dict[str, Any]) -> JSONResponse:
+    name = _set_name(payload)
+    if not name:
+        return JSONResponse({"ok": False, "error": "name is required"}, status_code=400)
+    return JSONResponse({"ok": True, "set": db.create_set(name)})
+
+
+@router.get("/api/sets/{set_id}")
+def api_sets_get(set_id: str) -> JSONResponse:
+    entry = db.get_set(set_id)
+    if not entry:
+        return _set_not_found()
+    return JSONResponse({"ok": True, "set": entry})
+
+
+@router.patch("/api/sets/{set_id}")
+def api_sets_rename(set_id: str, payload: dict[str, Any]) -> JSONResponse:
+    name = _set_name(payload)
+    if not name:
+        return JSONResponse({"ok": False, "error": "name is required"}, status_code=400)
+    if not db.rename_set(set_id, name):
+        return _set_not_found()
+    return JSONResponse({"ok": True, "set": db.get_set(set_id)})
+
+
+@router.delete("/api/sets/{set_id}")
+def api_sets_delete(set_id: str) -> JSONResponse:
+    if not db.delete_set(set_id):
+        return _set_not_found()
+    return JSONResponse({"ok": True})
+
+
+@router.post("/api/sets/{set_id}/items")
+def api_sets_add_items(set_id: str, payload: dict[str, Any]) -> JSONResponse:
+    """Add media to an existing set. Idempotent — `added` counts only new URLs."""
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        return JSONResponse({"ok": False, "error": "items must be a non-empty list"}, status_code=400)
+    added = db.add_set_items(set_id, items)
+    if added is None:
+        return _set_not_found()
+    return JSONResponse({"ok": True, "added": added, "set": db.get_set(set_id)})
+
+
+@router.delete("/api/sets/{set_id}/items")
+def api_sets_remove_item(set_id: str, payload: dict[str, Any]) -> JSONResponse:
+    url = payload.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return JSONResponse({"ok": False, "error": "url is required"}, status_code=400)
+    if not db.remove_set_item(set_id, url.strip()):
+        return JSONResponse({"ok": False, "error": "item not found"}, status_code=404)
+    return JSONResponse({"ok": True, "set": db.get_set(set_id)})

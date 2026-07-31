@@ -53,7 +53,8 @@ def _resolve_file_inputs(inputs: dict[str, str] | None) -> dict[str, dict[str, s
 
 
 def _post_run(c, workflow, overrides, inputs, bypass_loras, add_loras,
-              lock_seed: bool, endpoint_id: str, batch_id: str) -> str:
+              lock_seed: bool, endpoint_id: str, batch_id: str,
+              set_id: str = "") -> str:
     """Submit one job via /run (source=mcp) and return its job_id."""
     body = {
         "workflow": workflow,
@@ -65,6 +66,7 @@ def _post_run(c, workflow, overrides, inputs, bypass_loras, add_loras,
         "endpoint_id": endpoint_id or None,
         "source": "mcp",
         "batch_id": batch_id,
+        "set_id": set_id or None,
     }
     r = c.post("/api/blocks/comfy_gen/run", json=body)
     try:
@@ -91,6 +93,56 @@ def list_loras() -> dict[str, Any]:
     loras = data.get("loras") or []
     return {"loras": loras, "count": len(loras),
             "samplers": data.get("samplers") or [], "schedulers": data.get("schedulers") or []}
+
+
+# ---- Sets: named, mutable collections of generated media ----
+
+def _ok(data: dict[str, Any], what: str) -> dict[str, Any]:
+    if not data.get("ok"):
+        raise RuntimeError(data.get("error", f"{what} failed"))
+    return data
+
+
+@mcp.tool()
+def create_set(name: str) -> dict[str, Any]:
+    """Create a Set — a named, mutable collection of generated images/videos that
+    the user can filter the Artifacts gallery by. Returns {set_id, name}.
+
+    Pass the returned set_id to submit_jobs/submit_batch and every output those
+    jobs produce is filed into the Set automatically. A Set stays open: add more
+    to it later with add_to_set, from any run. Create one whenever the user asks
+    for a named collection ("a set for the summer drop") or when a fan-out's
+    outputs belong together."""
+    with _client() as c:
+        data = _ok(c.post("/api/sets", json={"name": name}).json(), "create set")
+    entry = data["set"]
+    return {"set_id": entry["id"], "name": entry["name"], "created_at": entry.get("created_at", "")}
+
+
+@mcp.tool()
+def list_sets() -> dict[str, Any]:
+    """List existing Sets, newest-first, each with its item_count. Use it to find
+    the set_id of a Set the user names ("add these to the summer drop") instead of
+    creating a duplicate."""
+    with _client() as c:
+        data = _ok(c.get("/api/sets").json(), "list sets")
+    sets = data.get("sets") or []
+    return {"sets": sets, "count": len(sets)}
+
+
+@mcp.tool()
+def add_to_set(set_id: str, urls: list[str]) -> dict[str, Any]:
+    """Add already-generated media to an existing Set by output URL (the
+    `/outputs/<name>.png` paths job_status/wait_for_jobs return). Idempotent —
+    re-adding a URL is a no-op, so `added` counts only what was new. Use this for
+    curating after the fact; for a fresh fan-out, pass set_id to submit_jobs
+    instead and skip this call."""
+    items = [{"url": str(u).strip()} for u in (urls or []) if str(u).strip()]
+    if not items:
+        raise ValueError("urls is required (one or more output URLs)")
+    with _client() as c:
+        data = _ok(c.post(f"/api/sets/{set_id}/items", json={"items": items}).json(), "add to set")
+    return {"added": data.get("added", 0), "set": data.get("set", {})}
 
 
 @mcp.tool()
@@ -124,6 +176,7 @@ def submit_jobs(
     lock_seed: bool = False,
     endpoint_id: str = "",
     batch_id: str = "",
+    set_id: str = "",
 ) -> dict[str, Any]:
     """Submit `count` ComfyGen jobs to BlockFlow. Fire-and-forget — returns job_ids
     immediately so you can fan out (auto mode). Seeds auto-randomize per job unless
@@ -150,6 +203,9 @@ def submit_jobs(
     live in the Artifacts > MCP view as each finishes — the backend persists them, so
     you do NOT need to call wait_for_jobs for them to appear. Pass an existing
     batch_id to add more jobs to the same gallery run. Returns {job_ids, batch_id}.
+
+    `set_id` files every finished output into that Set (see create_set) with no
+    follow-up call — pass it once and the whole fan-out collects itself.
     """
     workflow = _as_workflow(workflow)
     batch_id = batch_id or uuid.uuid4().hex[:12]
@@ -157,7 +213,7 @@ def submit_jobs(
     with _client() as c:
         for _ in range(max(1, count)):
             job_ids.append(_post_run(c, workflow, overrides, inputs, bypass_loras,
-                                     add_loras, lock_seed, endpoint_id, batch_id))
+                                     add_loras, lock_seed, endpoint_id, batch_id, set_id))
     return {"job_ids": job_ids, "batch_id": batch_id}
 
 
@@ -169,6 +225,7 @@ def submit_batch(
     lock_seed: bool = False,
     endpoint_id: str = "",
     batch_id: str = "",
+    set_id: str = "",
 ) -> dict[str, Any]:
     """Submit MANY different jobs at once over a shared workflow — the right tool for
     "generate N images" with different prompts. Each item in `jobs` is
@@ -181,6 +238,8 @@ def submit_batch(
 
     Do NOT call wait_for_jobs between submits — that serializes them; submit the whole
     batch in one call, then optionally wait once. Returns {job_ids, batch_id}.
+
+    `set_id` files every finished output into that Set (see create_set).
     """
     workflow = _as_workflow(workflow)
     batch_id = batch_id or uuid.uuid4().hex[:12]
@@ -191,7 +250,7 @@ def submit_batch(
                 c, workflow,
                 spec.get("overrides"), spec.get("inputs"), spec.get("bypass_loras"),
                 spec.get("add_loras", add_loras),
-                lock_seed, endpoint_id, batch_id,
+                lock_seed, endpoint_id, batch_id, set_id,
             ))
     return {"job_ids": job_ids, "batch_id": batch_id}
 

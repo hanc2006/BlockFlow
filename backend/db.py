@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
+import uuid
 from typing import Any
 
 from backend import config
@@ -50,6 +52,29 @@ def init_db() -> None:
                 data TEXT NOT NULL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        # (set_id, url) as the PK makes adding idempotent: the same output landing
+        # in a set twice (MCP retry, manual re-add) is a no-op, not a duplicate.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS set_items (
+                set_id TEXT NOT NULL,
+                url TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                run_id TEXT,
+                added_at TEXT NOT NULL,
+                PRIMARY KEY (set_id, url)
             )
             """
         )
@@ -131,6 +156,20 @@ def _run_matches_prompt(block_results: list[dict[str, Any]], needle: str) -> boo
     return False
 
 
+def _run_media_urls(block_results: list[dict[str, Any]]) -> set[str]:
+    """Every image/video URL a run produced. Values may be a scalar or a list."""
+    urls: set[str] = set()
+    for br in block_results:
+        for out in (br.get("outputs") or {}).values():
+            if out.get("kind") not in ("image", "video"):
+                continue
+            value = out.get("value")
+            for v in (value if isinstance(value, list) else [value]):
+                if isinstance(v, str) and v:
+                    urls.add(v)
+    return urls
+
+
 def list_runs(
     limit: int = 50,
     offset: int = 0,
@@ -139,8 +178,9 @@ def list_runs(
     prompt_query: str | None = None,
     hide_partial: bool = False,
     source: str | None = None,
+    set_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    if not media_kind and not prompt_query and not hide_partial and not source:
+    if not media_kind and not prompt_query and not hide_partial and not source and not set_id:
         conn = _get_conn()
         if favorited_only:
             rows = conn.execute(
@@ -155,7 +195,7 @@ def list_runs(
         conn.close()
         return [_row_to_dict(r) for r in rows]
 
-    filtered = _filtered_runs(favorited_only, media_kind, prompt_query, hide_partial, source)
+    filtered = _filtered_runs(favorited_only, media_kind, prompt_query, hide_partial, source, set_id)
     return filtered[offset : offset + limit]
 
 
@@ -165,8 +205,9 @@ def count_runs(
     prompt_query: str | None = None,
     hide_partial: bool = False,
     source: str | None = None,
+    set_id: str | None = None,
 ) -> int:
-    if not media_kind and not prompt_query and not hide_partial and not source:
+    if not media_kind and not prompt_query and not hide_partial and not source and not set_id:
         conn = _get_conn()
         if favorited_only:
             row = conn.execute("SELECT COUNT(*) AS count FROM runs WHERE favorited = 1").fetchone()
@@ -175,7 +216,7 @@ def count_runs(
         conn.close()
         return int(row["count"]) if row else 0
 
-    return len(_filtered_runs(favorited_only, media_kind, prompt_query, hide_partial, source))
+    return len(_filtered_runs(favorited_only, media_kind, prompt_query, hide_partial, source, set_id))
 
 
 # MCP-generated runs use this id prefix (see mcp_server / comfy_gen batch upsert).
@@ -188,8 +229,11 @@ def _filtered_runs(
     prompt_query: str | None,
     hide_partial: bool,
     source: str | None = None,
+    set_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Load candidate rows and apply Python-side filters. Returns newest-first."""
+    # One membership read for the whole scan; an empty/unknown set matches nothing.
+    member_urls = set_urls(set_id) if set_id else None
     conn = _get_conn()
     if favorited_only:
         rows = conn.execute(
@@ -213,6 +257,8 @@ def _filtered_runs(
         if media_kind and _primary_media_kind(br) != media_kind:
             continue
         if prompt_query and not _run_matches_prompt(br, prompt_query):
+            continue
+        if member_urls is not None and not (_run_media_urls(br) & member_urls):
             continue
         out.append(d)
     return out
@@ -256,6 +302,145 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     d["block_results"] = json.loads(d["block_results"])
     d["favorited"] = bool(d.get("favorited", 0))
     return d
+
+
+# ---- Sets: named, mutable collections of generated media ----
+#
+# A set holds output URLs (the same `/outputs/<name>` identity the gallery uses),
+# so media can be added long after the set was created — including automatically,
+# by a generation job that was submitted with a set_id.
+
+_VIDEO_SUFFIXES = (".mp4", ".webm", ".mov", ".mkv", ".gif")
+
+
+def _utc_now_z() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def media_kind_for_url(url: str) -> str:
+    """"video" or "image", by extension. Unknown extensions read as image —
+    the gallery treats a non-video output as an image everywhere else too."""
+    stem = url.split("?")[0].lower()
+    return "video" if stem.endswith(_VIDEO_SUFFIXES) else "image"
+
+
+def create_set(name: str) -> dict[str, Any]:
+    entry = {"id": f"set-{uuid.uuid4().hex[:12]}", "name": name, "created_at": _utc_now_z()}
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT INTO sets (id, name, created_at) VALUES (?, ?, ?)",
+            (entry["id"], entry["name"], entry["created_at"]),
+        )
+        conn.commit()
+        conn.close()
+    return entry
+
+
+def list_sets() -> list[dict[str, Any]]:
+    """All sets with their item counts, newest-first."""
+    conn = _get_conn()
+    rows = conn.execute(
+        """
+        SELECT s.id, s.name, s.created_at, COUNT(i.url) AS item_count
+        FROM sets s LEFT JOIN set_items i ON i.set_id = s.id
+        GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC
+        """
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_set(set_id: str) -> dict[str, Any] | None:
+    """One set with its items (oldest-added first), or None if it doesn't exist."""
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM sets WHERE id = ?", (set_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    items = conn.execute(
+        "SELECT url, kind, run_id, added_at FROM set_items WHERE set_id = ? ORDER BY added_at, rowid",
+        (set_id,),
+    ).fetchall()
+    conn.close()
+    return {**dict(row), "items": [dict(i) for i in items]}
+
+
+def set_urls(set_id: str) -> set[str]:
+    """Just the member URLs — what the Artifacts set filter matches runs against."""
+    conn = _get_conn()
+    rows = conn.execute("SELECT url FROM set_items WHERE set_id = ?", (set_id,)).fetchall()
+    conn.close()
+    return {r["url"] for r in rows}
+
+
+def rename_set(set_id: str, name: str) -> bool:
+    with _lock:
+        conn = _get_conn()
+        cursor = conn.execute("UPDATE sets SET name = ? WHERE id = ?", (name, set_id))
+        conn.commit()
+        renamed = cursor.rowcount > 0
+        conn.close()
+    return renamed
+
+
+def delete_set(set_id: str) -> bool:
+    with _lock:
+        conn = _get_conn()
+        cursor = conn.execute("DELETE FROM sets WHERE id = ?", (set_id,))
+        # No FK cascade on this schema — drop the items explicitly so a later set
+        # can't inherit orphaned rows.
+        conn.execute("DELETE FROM set_items WHERE set_id = ?", (set_id,))
+        conn.commit()
+        deleted = cursor.rowcount > 0
+        conn.close()
+    return deleted
+
+
+def add_set_items(set_id: str, items: list[Any]) -> int | None:
+    """Add {url, kind?, run_id?} entries to a set. Returns how many were newly
+    added (already-present URLs count 0), or None if the set doesn't exist."""
+    rows: list[tuple[str, str, str, str | None, str]] = []
+    now = _utc_now_z()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        url = url.strip()
+        kind = item.get("kind") or media_kind_for_url(url)
+        run_id = item.get("run_id")
+        rows.append((set_id, url, str(kind), str(run_id) if run_id else None, now))
+
+    with _lock:
+        conn = _get_conn()
+        if not conn.execute("SELECT 1 FROM sets WHERE id = ?", (set_id,)).fetchone():
+            conn.close()
+            return None
+        added = 0
+        for row in rows:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO set_items (set_id, url, kind, run_id, added_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                row,
+            )
+            added += cursor.rowcount
+        conn.commit()
+        conn.close()
+    return added
+
+
+def remove_set_item(set_id: str, url: str) -> bool:
+    with _lock:
+        conn = _get_conn()
+        cursor = conn.execute(
+            "DELETE FROM set_items WHERE set_id = ? AND url = ?", (set_id, url)
+        )
+        conn.commit()
+        removed = cursor.rowcount > 0
+        conn.close()
+    return removed
 
 
 # ---- Job persistence ----

@@ -2012,7 +2012,8 @@ def _download_output(url: str, job_id: str) -> Path:
 
 def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
                    overrides: dict[str, str] | None = None,
-                   endpoint_id: str = "", source: str = "", batch_id: str = "") -> None:
+                   endpoint_id: str = "", source: str = "", batch_id: str = "",
+                   set_id: str = "") -> None:
     """Run a ComfyUI workflow via comfy-gen CLI subprocess."""
     t0 = time.time()
     try:
@@ -2204,6 +2205,10 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
             services._update_job(job_id, status="COMPLETED",
                                  elapsed_seconds=round(time.time() - t0, 3))
 
+            if set_id:
+                _add_output_to_set(set_id, local_url,
+                                   run_id=f"run-mcp-{batch_id}" if batch_id else None)
+
             if source == "mcp" and batch_id:
                 try:
                     _upsert_mcp_batch_run(batch_id, job_id, local_url, {
@@ -2233,6 +2238,18 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
             pass
         if source == "mcp":
             _publish_event({"type": "mcp", "job_id": job_id, "batch_id": batch_id, "phase": "end"})
+
+
+def _add_output_to_set(set_id: str, url: str, run_id: str | None) -> None:
+    """File a finished output into a Set. A job submitted with a set_id lands its
+    output there with no extra call from the caller — that's the MCP contract.
+    Never fatal: an unknown/deleted set or a DB hiccup must not fail a generation
+    that already produced its image."""
+    try:
+        if db.add_set_items(set_id, [{"url": url, "run_id": run_id}]) is None:
+            print(f"[comfy-gen] set {set_id} not found; skipped adding {url}", flush=True)
+    except Exception as e:
+        print(f"[comfy-gen] failed adding {url} to set {set_id}: {e}", flush=True)
 
 
 # MCP batch runs: each completing job appends its output to one gallery run so the
@@ -2631,6 +2648,7 @@ async def run(request: Request) -> JSONResponse:
     endpoint_id = str(body.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
     source = str(body.get("source") or "").strip()  # "mcp" tags jobs for the Artifacts MCP view
     batch_id = str(body.get("batch_id") or "").strip()  # groups MCP jobs into one growing gallery run
+    set_id = str(body.get("set_id") or "").strip()  # file this job's output into a Set on completion
 
     # Validate + auto-anchor added LoRAs up front so a bad anchor errors loudly
     # rather than being silently dropped during insertion.
@@ -2702,12 +2720,14 @@ async def run(request: Request) -> JSONResponse:
         record["overrides"] = overrides  # live strip shows prompt/settings before completion
     if batch_id:
         record["batch_id"] = batch_id
+    if set_id:
+        record["set_id"] = set_id
     with state.JOBS_LOCK:
         state.JOBS[job_id] = record
         state._persist_jobs_locked()
 
     state.EXECUTOR.submit(_run_comfy_job, job_id, tmp.name, file_inputs, overrides,
-                          endpoint_id, source, batch_id)
+                          endpoint_id, source, batch_id, set_id)
 
     if source == "mcp":
         _publish_event({"type": "mcp", "job_id": job_id, "batch_id": batch_id, "phase": "start"})

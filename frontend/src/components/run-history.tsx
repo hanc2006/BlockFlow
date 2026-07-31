@@ -6,7 +6,7 @@ import { ChevronLeft, ChevronRight, EyeOff, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useMcpJobs, useMcpStream, useRuns } from '@/lib/hooks'
+import { useMcpJobs, useMcpStream, useRuns, useSets } from '@/lib/hooks'
 import type { MediaKindFilter, RunSource } from '@/lib/api'
 import { RunCard, findPrimaryArtifact, looksLikeTrainedLora } from './run-card'
 import { EmptyState } from '@/components/empty-state'
@@ -15,6 +15,7 @@ import { PageHeader } from '@/components/page-header'
 import { DatasetCard } from './dataset-card'
 import { LoraCard } from './lora-card'
 import { McpPlaceholderCard, isActiveJob } from './mcp-placeholder-card'
+import { SetFilter } from './set-filter'
 import type { RunEntry } from '@/lib/types'
 
 const PAGE_SIZE = 24
@@ -70,6 +71,7 @@ export function RunHistory() {
   const hidePartial = searchParams.get('hide_partial') !== '0'
   const mediaKind: MediaKindFilter | null = isMediaKind(searchParams.get('kind')) ? (searchParams.get('kind') as MediaKindFilter) : null
   const source: RunSource | null = searchParams.get('source') === 'mcp' ? 'mcp' : null
+  const setId = searchParams.get('set') || null
   const urlQuery = searchParams.get('q') ?? ''
   const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
 
@@ -102,8 +104,10 @@ export function RunHistory() {
   const mcpView = source === 'mcp'
   // SSE drives live updates in MCP view; the 15s poll is a fallback if the stream buffers.
   const { runs, total, isLoading, error, mutate } = useRuns(
-    PAGE_SIZE, offset, favoritesOnly, mediaKind, debouncedQuery, hidePartial, source, mcpView ? 15000 : 0,
+    PAGE_SIZE, offset, favoritesOnly, mediaKind, debouncedQuery, hidePartial, source, setId,
+    mcpView ? 15000 : 0,
   )
+  const { sets } = useSets()
   const { jobs: mcpJobs, mutate: mutateJobs } = useMcpJobs(mcpView)
   useMcpStream(mcpView, () => { mutate(); mutateJobs() })
 
@@ -116,7 +120,7 @@ export function RunHistory() {
   const endIndex = total === 0 ? 0 : offset + runs.length
   const canGoPrev = page > 1
   const canGoNext = page < totalPages
-  const hasFilters = favoritesOnly || mediaKind != null || debouncedQuery !== '' || !hidePartial
+  const hasFilters = favoritesOnly || mediaKind != null || debouncedQuery !== '' || !hidePartial || setId != null
 
   useEffect(() => {
     if (!isLoading && page > 1 && runs.length === 0) {
@@ -127,11 +131,12 @@ export function RunHistory() {
   const setPage = (p: number) => updateParams({ page: p === 1 ? null : String(p) })
   const setSource = (v: RunSource | 'all') => updateParams({ source: v === 'all' ? null : v, page: null })
   const setMediaKind = (v: MediaKindFilter | 'all') => updateParams({ kind: v === 'all' ? null : v, page: null })
+  const setSetId = (v: string | null) => updateParams({ set: v, page: null })
   const toggleFavorites = () => updateParams({ fav: favoritesOnly ? null : '1', page: null })
   const toggleHidePartial = () => updateParams({ hide_partial: hidePartial ? '0' : null, page: null })
   const clearAll = () => {
     setPromptDraft('')
-    updateParams({ fav: null, kind: null, q: null, hide_partial: null, page: null })
+    updateParams({ fav: null, kind: null, q: null, hide_partial: null, set: null, page: null })
   }
 
   const prevNextButtons = (
@@ -212,6 +217,8 @@ export function RunHistory() {
           )
         })}
       </div>
+
+      <SetFilter sets={sets} selectedId={setId} onChange={setSetId} />
 
       <Button
         variant={favoritesOnly ? 'default' : 'outline'}

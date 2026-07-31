@@ -32,6 +32,7 @@ export async function fetchRuns(
   promptQuery: string = '',
   hidePartial = true,
   source: RunSource | null = null,
+  setId: string | null = null,
 ) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
   if (favorited) params.set('favorited', 'true')
@@ -39,7 +40,75 @@ export async function fetchRuns(
   if (promptQuery) params.set('q', promptQuery)
   params.set('hide_partial', hidePartial ? 'true' : 'false')
   if (source) params.set('source', source)
+  if (setId) params.set('set_id', setId)
   const res = await fetch(`${BASE}/api/runs?${params}`)
+  return res.json()
+}
+
+// ---- Sets (named, mutable collections of generated media) ----
+
+export interface MediaSet {
+  id: string
+  name: string
+  created_at: string
+  item_count: number
+}
+
+export interface MediaSetItem {
+  url: string
+  kind: 'image' | 'video'
+  run_id: string | null
+  added_at: string
+}
+
+export async function fetchSets(): Promise<{ ok: boolean; sets: MediaSet[] }> {
+  const res = await fetch(`${BASE}/api/sets`)
+  return res.json()
+}
+
+export async function fetchSet(id: string) {
+  const res = await fetch(`${BASE}/api/sets/${encodeURIComponent(id)}`)
+  return res.json()
+}
+
+export async function createSet(name: string) {
+  const res = await fetch(`${BASE}/api/sets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  return res.json()
+}
+
+export async function renameSet(id: string, name: string) {
+  const res = await fetch(`${BASE}/api/sets/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  return res.json()
+}
+
+export async function deleteSet(id: string) {
+  const res = await fetch(`${BASE}/api/sets/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  return res.json()
+}
+
+export async function addToSet(id: string, urls: string[]) {
+  const res = await fetch(`${BASE}/api/sets/${encodeURIComponent(id)}/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: urls.map((url) => ({ url })) }),
+  })
+  return res.json()
+}
+
+export async function removeFromSet(id: string, url: string) {
+  const res = await fetch(`${BASE}/api/sets/${encodeURIComponent(id)}/items`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
   return res.json()
 }
 

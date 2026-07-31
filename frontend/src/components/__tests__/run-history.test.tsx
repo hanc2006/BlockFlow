@@ -37,6 +37,7 @@ vi.mock('@/lib/hooks', () => ({
   useRuns: () => useRunsReturn,
   useMcpJobs: () => ({ jobs: [], mutate: vi.fn() }),
   useMcpStream: () => {},
+  useSets: () => ({ sets: [], mutate: vi.fn() }),
 }))
 
 // ── RunCard / DatasetCard / LoraCard — heavy, not under test ─────────────────

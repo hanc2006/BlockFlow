@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import useSWR from 'swr'
-import { fetchMcpJobs, fetchRuns, type McpJob, type MediaKindFilter, type RunSource } from './api'
+import { fetchMcpJobs, fetchRuns, fetchSets, type McpJob, type MediaKindFilter, type MediaSet, type RunSource } from './api'
 import type { RunEntry } from './types'
 
 export function useRuns(
@@ -13,12 +13,13 @@ export function useRuns(
   promptQuery: string = '',
   hidePartial = true,
   source: RunSource | null = null,
+  setId: string | null = null,
   // While watching MCP generations land, poll so the growing batch card fills in.
   refreshInterval = 0,
 ) {
   const { data, error, isLoading, mutate } = useSWR(
-    ['runs', limit, offset, favorited, mediaKind, promptQuery, hidePartial, source],
-    () => fetchRuns(limit, offset, favorited, mediaKind, promptQuery, hidePartial, source),
+    ['runs', limit, offset, favorited, mediaKind, promptQuery, hidePartial, source, setId],
+    () => fetchRuns(limit, offset, favorited, mediaKind, promptQuery, hidePartial, source, setId),
     { revalidateOnFocus: true, keepPreviousData: true, refreshInterval }
   )
 
@@ -55,4 +56,10 @@ export function useMcpStream(enabled: boolean, onEvent: () => void) {
     es.onmessage = () => cb.current()
     return () => es.close()
   }, [enabled])
+}
+
+/** Sets (named collections of generated media) for the Artifacts set filter. */
+export function useSets() {
+  const { data, mutate } = useSWR(['sets'], fetchSets, { revalidateOnFocus: true })
+  return { sets: (data?.sets ?? []) as MediaSet[], mutate }
 }
