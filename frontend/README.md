@@ -210,7 +210,7 @@ If you don't use a particular block, you don't need that key.
 
 ## Development
 
-The app auto-registers new blocks — just drop a `frontend.block.tsx` (and optionally `backend.block.py`) into `custom_blocks/<slug>/`. See `CLAUDE.md` for the full block authoring guide.
+The app auto-registers new blocks — just drop a `frontend.block.tsx` (and optionally `backend.block.py`) into `custom_blocks/<slug>/`. See `../AGENTS.md` for the full block authoring guide.
 
 ```bash
 # Type-check and build the frontend

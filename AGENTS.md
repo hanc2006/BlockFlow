@@ -210,8 +210,7 @@ needed. Publishing uses the npm/GitHub release flow documented in
 
 ## UI Design System (Tightening Contract)
 
-These rules keep the UI consistent and prevent re-introducing the divergence the
-UI Tightening Audit (`docs/ui-tightening-audit.md`) catalogued.
+These rules keep the UI consistent and prevent re-introducing visual divergence.
 
 **Primitive-first.** Do not hand-roll a control when a `components/ui/*` shadcn
 primitive exists. Specifically: no raw `<button>` where `Button` fits, no raw

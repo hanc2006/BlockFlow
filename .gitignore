@@ -15,9 +15,11 @@ output
 prompt_writer_settings.json
 prompt_library.json
 
-# Beads passive export — sync uses refs/dolt/data, jsonl is regenerated
-.beads/interactions.jsonl
-.beads/issues.jsonl
+# Private working artifacts
+/.beads/
+/docs/specs/
+/docs/superpowers/plans/
+/docs/ui-tightening-audit.md
 
 # Top-level worktrees dir (separate from .claude/worktrees/)
 .worktrees/
