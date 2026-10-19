@@ -68,7 +68,7 @@ export interface WriterSettings {
   max_tokens: number
 }
 
-export interface OpenRouterModel {
+export interface OpenAICompatibleModel {
   id: string
   name: string
   context_length: number | null

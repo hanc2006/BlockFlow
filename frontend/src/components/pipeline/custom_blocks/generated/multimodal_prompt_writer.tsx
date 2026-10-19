@@ -466,7 +466,7 @@ function MultimodalPromptWriterBlock({
         </Button>
       </div>
       {hasApiKey === false && (
-        <ProviderMissingCard provider="OpenRouter" credentialLabel="OpenRouter API key" />
+        <ProviderMissingCard provider="OpenAI-compatible provider" credentialLabel="OpenAI-compatible API key" />
       )}
       {error && <p className="text-[10px] text-red-400">{error}</p>}
       {output && (
@@ -575,8 +575,8 @@ function RefThumb({ url, kind, tag, index, onRemove }: { url: string; kind: 'ima
 
 export const blockDef: BlockDef = {
   type: 'multimodalPromptWriter',
-  label: 'Multimodal Prompt Writer (OpenRouter)',
-  description: 'Synthesize a single generation prompt from images + video + audio + text using a vision-capable OpenRouter LLM.',
+  label: 'Multimodal Prompt Writer (OpenAI-compatible)',
+  description: 'Synthesize a single generation prompt from images + video + audio + text using a vision-capable OpenAI-compatible LLM.',
   size: 'huge',
   canStart: true,
   inputs: [

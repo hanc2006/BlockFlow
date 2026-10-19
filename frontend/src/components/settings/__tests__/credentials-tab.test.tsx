@@ -5,7 +5,7 @@
  * the CredentialInput level. This file asserts:
  *   - All expected credentials render
  *   - R2 sub-fields are grouped + share a single "Validate R2" button
- *   - The standalone Validate buttons (RunPod, OpenRouter) call the right
+ *   - The standalone Validate buttons (RunPod, OpenAI-compatible provider) call the right
  *     validator service
  */
 import { describe, expect, test, vi } from 'vitest'
@@ -15,6 +15,8 @@ import userEvent from '@testing-library/user-event'
 vi.mock('@/lib/settings/client', () => ({
   getCredential: vi.fn().mockResolvedValue(null),
   setCredential: vi.fn().mockResolvedValue(undefined),
+  getAppPref: vi.fn().mockResolvedValue(null),
+  setAppPref: vi.fn().mockResolvedValue(undefined),
   validateService: vi.fn().mockResolvedValue({ ok: true, error: null, info: null }),
 }))
 
@@ -30,7 +32,8 @@ describe('CredentialsTab', () => {
     expect(screen.getByLabelText(/R2 Access Key ID/)).toBeInTheDocument()
     expect(screen.getByLabelText(/R2 Secret Access Key/)).toBeInTheDocument()
     expect(screen.getByLabelText(/R2 Bucket/)).toBeInTheDocument()
-    expect(screen.getByLabelText(/OpenRouter API Key/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/OpenAI-compatible API Key/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/OpenAI-compatible API base URL/)).toHaveValue('https://api.openai.com/v1')
     expect(screen.getByLabelText(/CivitAI API Key/)).toBeInTheDocument()
     // sgs-ui-6px: HuggingFace token field for gated model downloads.
     expect(screen.getByLabelText(/HuggingFace Token/)).toBeInTheDocument()
@@ -69,12 +72,24 @@ describe('CredentialsTab', () => {
     // The RunPod row's Validate button is co-located with the input.
     // We confirm by clicking and asserting the call.
     const validateButtons = screen.getAllByRole('button', { name: /^Validate$/ })
-    // There should be at least 2: RunPod + OpenRouter (R2 has its own group button labeled "Validate R2")
+    // There should be at least 2: RunPod + OpenAI-compatible provider (R2 has its own group button labeled "Validate R2")
     expect(validateButtons.length).toBeGreaterThanOrEqual(2)
 
     // Click the first per-field validate; verify it calls validateService.
-    // (The order is RunPod first per the rendered order, then OpenRouter.)
+    // (The order is RunPod first per the rendered order, then the provider.)
     await user.click(validateButtons[0])
     expect(client.validateService).toHaveBeenCalledWith('runpod')
+  })
+
+  test('saving the provider base URL persists the app preference', async () => {
+    const user = userEvent.setup()
+    render(<CredentialsTab />)
+    const input = await screen.findByLabelText(/OpenAI-compatible API base URL/)
+
+    await user.clear(input)
+    await user.type(input, 'https://inference.example/v1')
+    await user.click(screen.getByRole('button', { name: /Save provider URL/ }))
+
+    expect(client.setAppPref).toHaveBeenCalledWith('openai_base_url', 'https://inference.example/v1')
   })
 })

@@ -15,9 +15,11 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from backend import services
+
 router = APIRouter()
 
-AUTO_TAG_MODEL = "google/gemini-3.1-flash-lite-preview"
+AUTO_TAG_MODEL = "gpt-4o-mini"
 AUTO_TAG_PROMPT = (
     "Generate 5-7 tags for this AI-generated media for CivitAI. Be explicit and accurate.\n\n"
     "Required tags (include when applicable):\n"
@@ -601,17 +603,16 @@ def _extract_video_frames_grid(video_path: Path, num_frames: int = 4) -> bytes:
 
 @router.post("/auto-tags")
 def auto_tags(body: dict) -> JSONResponse:
-    """Generate tags for media using Gemini Flash Lite via OpenRouter.
+    """Generate tags for media using the configured OpenAI-compatible provider.
 
-    Sync (threadpool) — does a blocking OpenRouter HTTP call; see the note on `share`.
+    Sync (threadpool) — does a blocking provider HTTP call; see the note on `share`.
     """
-    from backend import config
-
-    if not config.OPENROUTER_API_KEY:
-        return JSONResponse({"ok": False, "error": "OPENROUTER_API_KEY not set"}, status_code=400)
+    if not services._get_openai_compatible_config()["api_key"]:
+        return JSONResponse({"ok": False, "error": "OpenAI-compatible provider API key is not configured"}, status_code=400)
 
     media_url = body.get("media_url", "")
     model_name = body.get("model", "")
+    tag_model = str(body.get("tag_model") or AUTO_TAG_MODEL).strip()
     loras = body.get("loras", [])
     if not media_url:
         return JSONResponse({"ok": False, "error": "media_url required"}, status_code=400)
@@ -634,8 +635,8 @@ def auto_tags(body: dict) -> JSONResponse:
         b64_image = base64.b64encode(image_bytes).decode("ascii")
         prompt_text = _build_tag_prompt(model_name, loras)
 
-        openrouter_body = json.dumps({
-            "model": AUTO_TAG_MODEL,
+        provider_body = {
+            "model": tag_model,
             "messages": [
                 {
                     "role": "user",
@@ -652,27 +653,12 @@ def auto_tags(body: dict) -> JSONResponse:
             ],
             "max_tokens": 200,
             "temperature": 0.3,
-        }).encode()
-
-        headers = {
-            "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
         }
-        if config.OPENROUTER_SITE_URL:
-            headers["HTTP-Referer"] = config.OPENROUTER_SITE_URL
-        if config.OPENROUTER_APP_NAME:
-            headers["X-Title"] = config.OPENROUTER_APP_NAME
-
-        req = urllib.request.Request(
-            f"{config.OPENROUTER_API_BASE}/chat/completions",
-            data=openrouter_body,
-            headers=headers,
-            method="POST",
+        result = services._openai_compatible_request_json(
+            "POST", "/chat/completions", provider_body, timeout=30
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
 
-        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        content = services._extract_openai_compatible_completion_text(result)
         if not content:
             return JSONResponse({"ok": False, "error": "Empty response from LLM"})
 
@@ -682,13 +668,6 @@ def auto_tags(body: dict) -> JSONResponse:
 
         return JSONResponse({"ok": True, "tags": tags})
 
-    except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read().decode("utf-8", errors="replace")[:300]
-        except Exception:
-            pass
-        return JSONResponse({"ok": False, "error": f"OpenRouter error {e.code}: {detail}"}, status_code=500)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 

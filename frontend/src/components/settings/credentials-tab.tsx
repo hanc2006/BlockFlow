@@ -1,13 +1,45 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
-import { validateService, type ValidationResult } from '@/lib/settings/client'
+import { getAppPref, setAppPref, validateService, type ValidationResult } from '@/lib/settings/client'
 
 import { Button } from '@/components/ui/button'
 import { CredentialInput } from './credential-input'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+
+const DEFAULT_PROVIDER_BASE_URL = 'https://api.openai.com/v1'
 
 export function CredentialsTab() {
+  const [providerBaseUrl, setProviderBaseUrl] = useState(DEFAULT_PROVIDER_BASE_URL)
+  const [savingProviderBaseUrl, setSavingProviderBaseUrl] = useState(false)
+  const [providerBaseUrlSaved, setProviderBaseUrlSaved] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([
+      getAppPref('openai_base_url'),
+      fetch('/api/settings/openai-compatible').then((response) => response.json()),
+    ])
+      .then(([savedUrl, provider]) => {
+        if (!cancelled) setProviderBaseUrl(savedUrl || provider?.base_url || DEFAULT_PROVIDER_BASE_URL)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  const saveProviderBaseUrl = async () => {
+    setSavingProviderBaseUrl(true)
+    setProviderBaseUrlSaved(false)
+    try {
+      await setAppPref('openai_base_url', providerBaseUrl.trim())
+      setProviderBaseUrlSaved(true)
+    } finally {
+      setSavingProviderBaseUrl(false)
+    }
+  }
+
   return (
     <div className="space-y-8">
       <Section title="Generation" description="RunPod is required for all serverless inference + training.">
@@ -23,11 +55,36 @@ export function CredentialsTab() {
 
       <Section title="Prompt + Sharing" description="LLM-based prompt writers + CivitAI publishing.">
         <CredentialInput
-          name="openrouter_api_key"
-          label="OpenRouter API Key"
-          validator="openrouter"
-          hint="Used by prompt_writer and i2v_prompt_writer blocks."
+          name="openai_api_key"
+          label="OpenAI-compatible API Key"
+          validator="openai_compatible"
+          hint="Used by prompt, multimodal, and dataset-caption blocks."
         />
+        <div className="space-y-1.5">
+          <Label htmlFor="openai-compatible-base-url">OpenAI-compatible API base URL</Label>
+          <div className="flex gap-2">
+            <Input
+              id="openai-compatible-base-url"
+              value={providerBaseUrl}
+              onChange={(event) => {
+                setProviderBaseUrl(event.target.value)
+                setProviderBaseUrlSaved(false)
+              }}
+              placeholder={DEFAULT_PROVIDER_BASE_URL}
+              className="flex-1 font-mono"
+            />
+            <Button
+              type="button"
+              size="sm"
+              onClick={saveProviderBaseUrl}
+              disabled={savingProviderBaseUrl || !providerBaseUrl.trim()}
+            >
+              {savingProviderBaseUrl ? 'Saving…' : 'Save provider URL'}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">Use the API root that serves `/chat/completions` and `/models`.</p>
+          {providerBaseUrlSaved && <p className="text-xs text-success">Saved</p>}
+        </div>
         <CredentialInput
           name="civitai_api_key"
           label="CivitAI API Key"

@@ -97,7 +97,7 @@ def test_multimodal_prompt_writer_resolves_local_images_under_payload_budget(tmp
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
 
-    monkeypatch.setattr(mod, "OPENROUTER_IMAGE_PAYLOAD_LIMIT_BYTES", 900_000)
+    monkeypatch.setattr(mod, "OPENAI_COMPATIBLE_IMAGE_PAYLOAD_LIMIT_BYTES", 900_000)
 
     resolved = mod._resolve_image_urls_for_payload([f"/outputs/ref-{i}.jpg" for i in range(3)])
 

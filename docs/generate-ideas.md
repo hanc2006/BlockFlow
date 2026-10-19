@@ -33,7 +33,7 @@ Each combination submitted as a separate comfy-gen job
 
 ```json
 {
-  "model": "openrouter-model-id",
+  "model": "compatible-model-id",
   "description": "Travel photo pack in Thailand",
   "count": 8,
   "temperature": 0.9
@@ -59,16 +59,18 @@ The LLM is instructed to (lines 84–99):
 - Keep the same character across all variations (consistent physical attributes)
 - Vary only setting, clothing, pose, activity, lighting, mood
 - Output 1–2 sentence idea seeds with specific visual details
-- Return a JSON array of strings
+- Return a JSON object containing an `ideas` array of strings, without markdown fences
 
 ### JSON Parsing
 
-Three-stage fallback (lines 131–147):
-1. Direct `json.loads()` on response content
-2. Extract from markdown code block (`` ```json ... ``` ``)
-3. Raw array extraction
+1. Parse a JSON object or array directly from response content
+2. If parsing fails, extract a JSON array from the response text
 
-Timeout: 120s for OpenRouter calls.
+The request uses the shared OpenAI-compatible Chat Completions client. JSON is
+requested in the system prompt rather than through provider-specific response
+format extensions.
+
+Timeout: 120s for OpenAI-compatible Chat Completions calls.
 
 ## Frontend: Prompt Writer
 
@@ -161,5 +163,5 @@ Each combination is submitted to `POST /api/blocks/comfy_gen/run` with merged ov
 | Max ideas per generation | 64 |
 | Batch confirmation threshold | > 25 combinations |
 | Default parallel jobs | 5 |
-| OpenRouter timeout | 120s |
+| OpenAI-compatible provider timeout | 120s |
 | Batch status update throttle | 1000ms |

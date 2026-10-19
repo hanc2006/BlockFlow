@@ -3,7 +3,7 @@
  *
  * Mirrors `image-ref.ts`. Video Loader emits objects carrying *both* a
  * local /outputs path and a public tmpfiles URL so downstream consumers
- * can pick whichever form they need (HTTP-fetchable for PiAPI/OpenRouter,
+ * can pick whichever form they need (HTTP-fetchable for PiAPI/OpenAI-compatible APIs,
  * local bytes for in-app preview, etc.) without forcing the user to
  * pre-decide.
  *
@@ -41,7 +41,7 @@ function normalize(input: unknown): Array<string | VideoRef> {
 }
 
 /**
- * URLs suitable for external HTTP fetch (PiAPI, OpenRouter, etc).
+ * URLs suitable for external HTTP fetch (PiAPI, OpenAI-compatible APIs, etc).
  * Skips entries that resolve only to a non-http local path — remote
  * services can't reach `/outputs/...`. Order is preserved.
  */

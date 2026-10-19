@@ -213,6 +213,9 @@ OPENROUTER_API_BASE = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/ap
 OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "").strip()
 OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", APP_TITLE).strip()
 OPENROUTER_MODEL_CACHE_TTL_SEC = int(os.getenv("OPENROUTER_MODEL_CACHE_TTL_SEC", "300"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip()
+OPENAI_MODEL_CACHE_TTL_SEC = int(os.getenv("OPENAI_MODEL_CACHE_TTL_SEC", "300"))
 
 DEFAULT_WRITER_SYSTEM_PROMPT = os.getenv("DEFAULT_WRITER_SYSTEM_PROMPT", """You are an expert Cinematic Prompt Engineer for high-end AI video generation. Your goal is to transform a vague user concept into a hyper-realistic, 8–10 second continuous cinematic shot portraying an intimate, adult moment in a woman's life.
 1. Stylistic Translation

@@ -22,13 +22,13 @@ if you're about to make a non-trivial change.
 │  │ /api/blocks/.../..│         │ + run history    │               │
 │  └────────┬─────────┘         └──────────────────┘               │
 │           │                                                       │
-│           │ outbound (RunPod, R2, OpenRouter, ...)                │
+│           │ outbound (RunPod, R2, OpenAI-compatible APIs, ...)    │
 └───────────┼───────────────────────────────────────────────────────┘
             │
             ▼
        ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
        │  RunPod         │  │  Cloudflare R2  │  │  Other APIs     │
-       │  serverless     │  │  / AWS S3       │  │  (OpenRouter,   │
+     │  serverless     │  │  / AWS S3       │  │  (compatible,   │
        │  endpoints      │  │  (transport)    │  │   CivitAI, ...) │
        └─────────────────┘  └─────────────────┘  └─────────────────┘
 ```
@@ -61,7 +61,15 @@ Three SQLite tables coexisting in `run_history.db`:
 - `settings_endpoints` — ComfyGen + AIO trainer config (endpoint ID, template ID/name, volume ID, GPU tier, max workers).
 - `settings_app_prefs` — output directory, run history retention.
 
-Repository functions live in `settings_store.py`. The HTTP layer is `settings_routes.py`. Validation (RunPod whoami, R2 round-trip, OpenRouter auth) lives in `settings_validators.py`.
+Repository functions live in `settings_store.py`. The HTTP layer is `settings_routes.py`. Validation (RunPod whoami, R2 round-trip, and OpenAI-compatible `/models`) lives in `settings_validators.py`.
+
+LLM blocks share the provider transport and model catalogue in `backend/services.py`.
+The API key is read from Settings or `OPENAI_API_KEY`; the base URL is read from
+the Settings app preference or `OPENAI_BASE_URL`. Existing `OPENROUTER_*` values
+are migration fallbacks. Models without modality metadata remain selectable in
+multimodal blocks because standard `/models` responses do not promise those fields.
+Image input requires a vision-capable model. Video/audio content parts are
+provider-specific extensions and may not work on every compatible endpoint.
 
 ### RunPod client (`backend/runpod_api.py`)
 

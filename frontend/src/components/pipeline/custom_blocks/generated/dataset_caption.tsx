@@ -53,7 +53,7 @@ interface JobSnap {
 
 interface HealthInfo {
   ok: boolean
-  openrouter_key_present: boolean
+  openai_compatible_key_present: boolean
   default_system_prompt: string
   default_user_prompt: string
 }
@@ -175,7 +175,7 @@ function DatasetCaptionBlock({ blockId, inputs, setOutput, registerExecute, setS
         throw new Error('No dataset selected — connect upstream or pick from the dropdown.')
       }
       if (!model) throw new Error('Pick a vision model')
-      if (!health?.openrouter_key_present) throw new Error('OPENROUTER_API_KEY missing in .env')
+      if (!health?.openai_compatible_key_present) throw new Error('OpenAI-compatible provider API key is not configured')
 
       setStatusMessage('Submitting captioning job...')
       const startRes = await fetch('/api/blocks/dataset_caption/run', {
@@ -311,8 +311,8 @@ function DatasetCaptionBlock({ blockId, inputs, setOutput, registerExecute, setS
         </CollapsibleContent>
       </Collapsible>
 
-      {health && !health.openrouter_key_present && (
-        <ProviderMissingCard provider="OpenRouter" credentialLabel="OpenRouter API key" />
+      {health && !health.openai_compatible_key_present && (
+        <ProviderMissingCard provider="OpenAI-compatible provider" credentialLabel="OpenAI-compatible API key" />
       )}
 
       {progress && (
@@ -343,8 +343,8 @@ function DatasetCaptionBlock({ blockId, inputs, setOutput, registerExecute, setS
 
 export const blockDef: BlockDef = {
   type: 'datasetCaption',
-  label: 'Dataset Caption (OpenRouter)',
-  description: 'Auto-caption every image in a dataset via an OpenRouter vision LLM, ready for LoRA training.',
+  label: 'Dataset Caption (OpenAI-compatible)',
+  description: 'Auto-caption every image in a dataset via an OpenAI-compatible vision LLM, ready for LoRA training.',
   size: 'lg',
   canStart: true,
   inputs: [

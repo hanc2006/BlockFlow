@@ -23,7 +23,7 @@ from typing import Any, Callable, TypedDict
 
 from curl_cffi import requests as _cffi_requests
 
-from backend import settings_store
+from backend import services, settings_store
 
 
 class ValidationResult(TypedDict):
@@ -215,7 +215,29 @@ def validate_r2() -> ValidationResult:
     return ValidationResult(ok=True, error=None, info=info)
 
 
-# === OpenRouter =============================================================
+# === OpenAI-compatible provider =============================================
+
+def validate_openai_compatible() -> ValidationResult:
+    provider = services._get_openai_compatible_config()
+    if not provider["api_key"]:
+        raise CredentialNotConfigured("openai_api_key not configured in Settings or environment")
+
+    try:
+        body = services._openai_compatible_request_json("GET", "/models", timeout=10)
+    except Exception as exc:
+        return ValidationResult(ok=False, error=str(exc), info=None)
+
+    rows = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        return ValidationResult(ok=False, error="models response missing data list", info=None)
+    return ValidationResult(
+        ok=True,
+        error=None,
+        info={"models_visible": len(rows), "base_url": provider["base_url"]},
+    )
+
+
+# === OpenRouter (legacy validation) =========================================
 
 OPENROUTER_AUTH_URL = "https://openrouter.ai/api/v1/auth/key"
 
@@ -392,6 +414,7 @@ def validate_huggingface() -> ValidationResult:
 VALIDATORS: dict[str, Callable[[], ValidationResult]] = {
     "runpod": validate_runpod,
     "r2": validate_r2,
+    "openai_compatible": validate_openai_compatible,
     "openrouter": validate_openrouter,
     "civitai": validate_civitai,
     "huggingface": validate_huggingface,
@@ -403,6 +426,7 @@ VALIDATORS: dict[str, Callable[[], ValidationResult]] = {
 VALIDATOR_CREDENTIALS: dict[str, tuple[str, ...]] = {
     "runpod": ("runpod_api_key",),
     "r2": R2_FIELDS,
+    "openai_compatible": ("openai_api_key", "openrouter_api_key"),
     "openrouter": ("openrouter_api_key",),
     "civitai": ("civitai_api_key",),
     "huggingface": ("hf_token",),
@@ -416,6 +440,7 @@ VALIDATOR_CREDENTIALS: dict[str, tuple[str, ...]] = {
 REQUIRED_CREDENTIALS: dict[str, tuple[str, ...]] = {
     "runpod": ("runpod_api_key",),
     "r2": ("r2_access_key_id", "r2_secret_access_key", "r2_bucket"),
+    "openai_compatible": ("openai_api_key",),
     "openrouter": ("openrouter_api_key",),
     "civitai": ("civitai_api_key",),
     "huggingface": ("hf_token",),
@@ -423,6 +448,8 @@ REQUIRED_CREDENTIALS: dict[str, tuple[str, ...]] = {
 
 def credentials_missing(service: str) -> bool:
     """Whether any required credential for `service` is empty/unset."""
+    if service == "openai_compatible":
+        return not bool(services._get_openai_compatible_config()["api_key"])
     fields = REQUIRED_CREDENTIALS.get(service, ())
     return any(not settings_store.get_credential(f) for f in fields)
 

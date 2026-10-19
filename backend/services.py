@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 import urllib.error
@@ -8,7 +9,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from backend import config, db, media_meta, state
+from backend import config, db, media_meta, settings_store, state
 
 
 def _now() -> float:
@@ -56,101 +57,127 @@ def _request_json_with_headers(
         raise RuntimeError(f"Request failed: {e}") from e
 
 
-def _openrouter_headers() -> dict[str, str]:
+def _get_openai_compatible_config() -> dict[str, str]:
+    """Resolve provider settings, preferring current Settings over environment fallbacks."""
+    openai_api_key = (
+        settings_store.get_credential("openai_api_key")
+        or os.getenv("OPENAI_API_KEY")
+        or config.OPENAI_API_KEY
+    )
+    legacy_api_key = (
+        settings_store.get_credential("openrouter_api_key")
+        or os.getenv("OPENROUTER_API_KEY")
+        or config.OPENROUTER_API_KEY
+    )
+    api_key = openai_api_key or legacy_api_key
+    base_url = settings_store.get_app_pref("openai_base_url") or os.getenv("OPENAI_BASE_URL") or config.OPENAI_BASE_URL
+    if not base_url:
+        if not openai_api_key and legacy_api_key:
+            base_url = os.getenv("OPENROUTER_API_BASE") or config.OPENROUTER_API_BASE
+        else:
+            base_url = "https://api.openai.com/v1"
+    return {"api_key": str(api_key).strip(), "base_url": str(base_url).strip().rstrip("/")}
+
+
+def _openai_compatible_request_json(
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+    timeout: int = 60,
+) -> dict[str, Any]:
+    provider = _get_openai_compatible_config()
+    if not provider["api_key"]:
+        raise RuntimeError("OpenAI-compatible provider API key is missing")
+    url = f"{provider['base_url']}/{path.lstrip('/')}"
     headers = {
-        "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {provider['api_key']}",
         "Content-Type": "application/json",
     }
-    if config.OPENROUTER_SITE_URL:
-        headers["HTTP-Referer"] = config.OPENROUTER_SITE_URL
-    if config.OPENROUTER_APP_NAME:
-        headers["X-Title"] = config.OPENROUTER_APP_NAME
-    return headers
+    return _request_json_with_headers(method, url, headers, payload=payload, timeout=timeout)
 
 
-def _openrouter_request_json(method: str, path: str, payload: dict[str, Any] | None = None, timeout: int = 60) -> dict[str, Any]:
-    if not config.OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY is missing")
-    url = f"{config.OPENROUTER_API_BASE.rstrip('/')}/{path.lstrip('/')}"
-    return _request_json_with_headers(method, url, _openrouter_headers(), payload=payload, timeout=timeout)
-
-
-def _is_text_generation_model(model_obj: dict[str, Any]) -> bool:
-    arch = model_obj.get("architecture")
-    if not isinstance(arch, dict):
-        return False
-
-    input_mods = arch.get("input_modalities")
-    output_mods = arch.get("output_modalities")
-    modality = str(arch.get("modality") or "").lower()
-
-    input_set = {str(x).lower() for x in input_mods} if isinstance(input_mods, list) else set()
-    output_set = {str(x).lower() for x in output_mods} if isinstance(output_mods, list) else set()
-
-    input_has_text = "text" in input_set or ("text" in modality.split("->")[0] if "->" in modality else "text" in modality)
-    output_has_text = "text" in output_set or ("text" in modality.split("->")[-1] if "->" in modality else "text" in modality)
-    return input_has_text and output_has_text
-
-
-def _normalize_openrouter_model(model_obj: dict[str, Any]) -> dict[str, Any] | None:
+def _normalize_openai_compatible_model(model_obj: dict[str, Any]) -> dict[str, Any] | None:
     model_id = str(model_obj.get("id") or "").strip()
     if not model_id:
         return None
     arch = model_obj.get("architecture") if isinstance(model_obj.get("architecture"), dict) else {}
+    input_modalities = model_obj.get("input_modalities", arch.get("input_modalities", []))
+    output_modalities = model_obj.get("output_modalities", arch.get("output_modalities", []))
     return {
         "id": model_id,
         "name": str(model_obj.get("name") or model_id),
         "context_length": model_obj.get("context_length"),
-        "modality": arch.get("modality"),
-        "input_modalities": arch.get("input_modalities") if isinstance(arch.get("input_modalities"), list) else [],
-        "output_modalities": arch.get("output_modalities") if isinstance(arch.get("output_modalities"), list) else [],
+        "modality": model_obj.get("modality") or arch.get("modality"),
+        "input_modalities": input_modalities if isinstance(input_modalities, list) else [],
+        "output_modalities": output_modalities if isinstance(output_modalities, list) else [],
     }
 
 
-def _fetch_openrouter_models() -> list[dict[str, Any]]:
-    resp = _openrouter_request_json("GET", "/models", None, timeout=60)
+def _model_has_text_io(model_obj: dict[str, Any]) -> bool:
+    normalized = _normalize_openai_compatible_model(model_obj)
+    if normalized is None:
+        return False
+    input_mods = {str(value).lower() for value in normalized["input_modalities"]}
+    output_mods = {str(value).lower() for value in normalized["output_modalities"]}
+    modality = str(normalized["modality"] or "").lower()
+    if not input_mods and not output_mods and not modality:
+        return True
+    if "->" in modality:
+        left, right = modality.split("->", 1)
+        input_mods.update(part.strip() for part in left.split("+") if part.strip())
+        output_mods.update(part.strip() for part in right.split("+") if part.strip())
+    if not input_mods:
+        input_mods = {"text"}
+    if not output_mods:
+        output_mods = {"text"}
+    return "text" in input_mods and "text" in output_mods
+
+
+def _fetch_openai_compatible_models() -> list[dict[str, Any]]:
+    resp = _openai_compatible_request_json("GET", "/models", None, timeout=60)
     rows = resp.get("data")
     if not isinstance(rows, list):
-        raise RuntimeError(f"OpenRouter models response missing data list: {resp}")
+        raise RuntimeError(f"OpenAI-compatible models response missing data list: {resp}")
 
     out: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if not _is_text_generation_model(row):
+        if not _model_has_text_io(row):
             continue
-        norm = _normalize_openrouter_model(row)
+        norm = _normalize_openai_compatible_model(row)
         if norm:
             out.append(norm)
     out.sort(key=lambda x: str(x.get("id", "")).lower())
     return out
 
 
-def _get_openrouter_models(refresh: bool = False) -> tuple[list[dict[str, Any]], str | None, bool]:
+def _get_openai_compatible_models(refresh: bool = False) -> tuple[list[dict[str, Any]], str | None, bool]:
     now = _now()
-    with state.OPENROUTER_MODELS_CACHE_LOCK:
-        cache_age = now - float(state.OPENROUTER_MODELS_CACHE.get("ts", 0.0))
-        cache_valid = bool(state.OPENROUTER_MODELS_CACHE.get("ts")) and cache_age < float(config.OPENROUTER_MODEL_CACHE_TTL_SEC)
+    base_url = _get_openai_compatible_config()["base_url"]
+    with state.OPENAI_COMPATIBLE_MODELS_CACHE_LOCK:
+        cache = state.OPENAI_COMPATIBLE_MODELS_CACHE.get(base_url, {})
+        cache_age = now - float(cache.get("ts", 0.0))
+        cache_valid = bool(cache.get("ts")) and cache_age < float(config.OPENAI_MODEL_CACHE_TTL_SEC)
         if not refresh and cache_valid:
-            cached = state.OPENROUTER_MODELS_CACHE.get("models", [])
+            cached = cache.get("models", [])
             return list(cached) if isinstance(cached, list) else [], None, True
 
     try:
-        models = _fetch_openrouter_models()
+        models = _fetch_openai_compatible_models()
     except Exception as e:
-        with state.OPENROUTER_MODELS_CACHE_LOCK:
-            cached = state.OPENROUTER_MODELS_CACHE.get("models", [])
+        with state.OPENAI_COMPATIBLE_MODELS_CACHE_LOCK:
+            cached = state.OPENAI_COMPATIBLE_MODELS_CACHE.get(base_url, {}).get("models", [])
             if isinstance(cached, list) and cached:
                 return list(cached), str(e), True
         return [], str(e), False
 
-    with state.OPENROUTER_MODELS_CACHE_LOCK:
-        state.OPENROUTER_MODELS_CACHE["ts"] = now
-        state.OPENROUTER_MODELS_CACHE["models"] = list(models)
+    with state.OPENAI_COMPATIBLE_MODELS_CACHE_LOCK:
+        state.OPENAI_COMPATIBLE_MODELS_CACHE[base_url] = {"ts": now, "models": list(models)}
     return models, None, False
 
 
-def _extract_openrouter_message_text(content: Any) -> str:
+def _extract_openai_compatible_message_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -171,13 +198,13 @@ def _extract_openrouter_message_text(content: Any) -> str:
     return ""
 
 
-def _extract_openrouter_completion_text(resp: dict[str, Any]) -> str:
+def _extract_openai_compatible_completion_text(resp: dict[str, Any]) -> str:
     choices = resp.get("choices")
     if not isinstance(choices, list) or not choices:
         return ""
     first = choices[0] if isinstance(choices[0], dict) else {}
     msg = first.get("message") if isinstance(first.get("message"), dict) else {}
-    text = _extract_openrouter_message_text(msg.get("content"))
+    text = _extract_openai_compatible_message_text(msg.get("content"))
     if text:
         return text
     choice_text = first.get("text")

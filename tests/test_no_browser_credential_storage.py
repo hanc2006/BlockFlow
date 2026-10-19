@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 CREDENTIAL_NAMES = {
     "runpod_api_key",
+    "openai_api_key",
     "openrouter_api_key",
     "civitai_api_key",
     "hf_token",
