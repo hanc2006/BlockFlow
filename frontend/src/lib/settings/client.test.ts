@@ -14,6 +14,7 @@ import {
   deleteEndpoint,
   getAppPref,
   getCredential,
+  getComfyGenRuntime,
   getEndpoint,
   listCredentials,
   listEndpoints,
@@ -25,6 +26,7 @@ import {
   getPresetManifest,
   listInstalledPresets,
   wizardAttach,
+  wizardRemoteAttach,
   wizardHealth,
   wizardPreflight,
   wizardProvision,
@@ -61,6 +63,47 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+})
+
+describe('ComfyGen remote runtime', () => {
+  test('reads runtime state without exposing a token', async () => {
+    const fetchMock = mockFetch([{
+      body: JSON.stringify({
+        runtime_kind: 'dedicated',
+        base_url: 'https://gpu.example.com:8000',
+        has_token: true,
+      }),
+    }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await getComfyGenRuntime()
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/settings/comfygen-runtime', { method: 'GET' })
+    expect(result).toEqual({
+      runtime_kind: 'dedicated',
+      base_url: 'https://gpu.example.com:8000',
+      has_token: true,
+    })
+  })
+
+  test('attaches to a validated server with a bearer token in the body', async () => {
+    const fetchMock = mockFetch([{
+      body: JSON.stringify({
+        runtime_kind: 'dedicated',
+        base_url: 'https://gpu.example.com:8000',
+        has_token: true,
+      }),
+    }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await wizardRemoteAttach('https://gpu.example.com:8000', 'secret-token')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/wizard/comfygen/remote/attach', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: 'https://gpu.example.com:8000', token: 'secret-token' }),
+    })
+  })
 })
 
 // === credentials ============================================================

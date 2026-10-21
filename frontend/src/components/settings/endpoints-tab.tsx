@@ -3,9 +3,13 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import {
+  getComfyGenRuntime,
   listEndpoints,
+  wizardRemoteAttach,
+  wizardRemoteDetach,
   wizardPreflight,
   wizardTeardown,
+  type ComfyGenRuntime,
   type EndpointRecord,
   type WizardPreflight,
   type WizardTeardownResult,
@@ -13,6 +17,7 @@ import {
 
 import { ComfyGenWizard } from '@/components/wizard/comfygen-wizard'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Dialog,
   DialogContent,
@@ -45,6 +50,10 @@ export function EndpointsTab() {
   // users can't launch the wizard when their credentials are missing or
   // unvalidated.
   const [preflight, setPreflight] = useState<WizardPreflight | null>(null)
+  const [comfyRuntime, setComfyRuntime] = useState<ComfyGenRuntime | null>(null)
+  const [runtimeError, setRuntimeError] = useState<string | null>(null)
+  const [remoteDialogOpen, setRemoteDialogOpen] = useState(false)
+  const [detachingRemote, setDetachingRemote] = useState(false)
 
   const refresh = useCallback(() => {
     listEndpoints()
@@ -67,13 +76,78 @@ export function EndpointsTab() {
       .catch(() => setPreflight({ ready: false, missing: [], services: {} }))
   }, [])
 
+  const refreshRuntime = useCallback(() => {
+    getComfyGenRuntime()
+      .then((runtime) => {
+        setComfyRuntime(runtime)
+        setRuntimeError(null)
+      })
+      .catch((err) => setRuntimeError(err instanceof Error ? err.message : String(err)))
+  }, [])
+
   useEffect(() => {
     refresh()
     refreshPreflight()
-  }, [refresh, refreshPreflight])
+    refreshRuntime()
+  }, [refresh, refreshPreflight, refreshRuntime])
 
   return (
     <div className="space-y-4">
+      <section className="rounded-lg border border-border/50 bg-card/40 p-5 space-y-3">
+        <header>
+          <h3 className="text-base font-semibold">Generation runtime</h3>
+          <p className="text-xs text-muted-foreground">
+            Choose between the RunPod serverless endpoint and an attached persistent ComfyGen server.
+          </p>
+        </header>
+        {runtimeError ? (
+          <div className="flex items-center justify-between gap-3" role="alert">
+            <p className="text-xs text-destructive">Could not load runtime status: {runtimeError}</p>
+            <Button type="button" size="sm" variant="outline" onClick={refreshRuntime}>Retry</Button>
+          </div>
+        ) : !comfyRuntime ? (
+          <p className="text-xs text-muted-foreground" role="status">Loading runtime status…</p>
+        ) : comfyRuntime.runtime_kind === 'dedicated' ? (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0 text-sm">
+              <span className="font-medium">Persistent server</span>
+              <span className="ml-2 break-all font-mono text-xs text-muted-foreground">
+                {comfyRuntime.base_url}
+              </span>
+              {!comfyRuntime.has_token && (
+                <p className="mt-1 text-xs text-destructive">No bearer token is configured.</p>
+              )}
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={detachingRemote}
+              onClick={async () => {
+                setDetachingRemote(true)
+                setRuntimeError(null)
+                try {
+                  setComfyRuntime(await wizardRemoteDetach())
+                } catch (err) {
+                  setRuntimeError(err instanceof Error ? err.message : String(err))
+                } finally {
+                  setDetachingRemote(false)
+                }
+              }}
+            >
+              {detachingRemote ? 'Switching…' : 'Use serverless endpoint'}
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm"><span className="font-medium">RunPod serverless</span> is active.</p>
+            <Button type="button" size="sm" variant="outline" onClick={() => setRemoteDialogOpen(true)}>
+              Attach persistent host
+            </Button>
+          </div>
+        )}
+      </section>
+
       {ENDPOINT_DEFINITIONS.map((def) => (
         <EndpointRow
           key={def.type}
@@ -111,6 +185,17 @@ export function EndpointsTab() {
         <TrainerWizardPlaceholder onClose={() => setWizardOpen(null)} />
       )}
 
+      {remoteDialogOpen && (
+        <RemoteComfyGenDialog
+          onClose={() => setRemoteDialogOpen(false)}
+          onComplete={(runtime) => {
+            setComfyRuntime(runtime)
+            setRuntimeError(null)
+            setRemoteDialogOpen(false)
+          }}
+        />
+      )}
+
       {teardownTarget === 'comfygen' && (
         <TeardownConfirmDialog
           record={byType.get('comfygen') ?? null}
@@ -136,6 +221,81 @@ export function EndpointsTab() {
         }} />
       )}
     </div>
+  )
+}
+
+function RemoteComfyGenDialog({
+  onClose,
+  onComplete,
+}: {
+  onClose: () => void
+  onComplete: (runtime: ComfyGenRuntime) => void
+}) {
+  const [baseUrl, setBaseUrl] = useState('')
+  const [token, setToken] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose() }}>
+      <DialogContent showCloseButton={!busy} className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Attach persistent ComfyGen server</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Enter the URL and bearer token for a running ComfyGen compatibility server. BlockFlow will validate it before switching generation to that host.
+        </p>
+        <label className="space-y-1 text-sm" htmlFor="comfygen-remote-url">
+          <span>Server URL</span>
+          <Input
+            id="comfygen-remote-url"
+            aria-label="Server URL"
+            type="url"
+            value={baseUrl}
+            onChange={(event) => setBaseUrl(event.target.value)}
+            placeholder="https://gpu.example.com:8000"
+            autoComplete="url"
+            spellCheck={false}
+          />
+        </label>
+        <label className="space-y-1 text-sm" htmlFor="comfygen-remote-token">
+          <span>Bearer token</span>
+          <Input
+            id="comfygen-remote-token"
+            aria-label="Bearer token"
+            type="password"
+            value={token}
+            onChange={(event) => setToken(event.target.value)}
+            autoComplete="new-password"
+            spellCheck={false}
+          />
+        </label>
+        {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <Button type="button" size="sm" variant="outline" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={async () => {
+              setBusy(true)
+              setError(null)
+              try {
+                onComplete(await wizardRemoteAttach(baseUrl, token))
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err))
+              } finally {
+                setBusy(false)
+              }
+            }}
+            disabled={busy || !baseUrl.trim() || !token.trim()}
+          >
+            {busy ? 'Validating…' : 'Connect remote server'}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 

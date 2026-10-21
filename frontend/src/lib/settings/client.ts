@@ -40,6 +40,12 @@ export type EndpointInput = {
   provisioned_at?: string | null
 }
 
+export type ComfyGenRuntime = {
+  runtime_kind: 'serverless' | 'dedicated'
+  base_url: string | null
+  has_token: boolean
+}
+
 export type ValidationResult = {
   ok: boolean
   error: string | null
@@ -116,6 +122,12 @@ export async function setEndpoint(type: string, input: EndpointInput): Promise<v
 export async function deleteEndpoint(type: string): Promise<void> {
   const res = await fetch(`/api/settings/endpoints/${encodeURIComponent(type)}`, { method: 'DELETE' })
   await _throwIfNonOk(res)
+}
+
+export async function getComfyGenRuntime(): Promise<ComfyGenRuntime> {
+  const res = await fetch('/api/settings/comfygen-runtime', { method: 'GET' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as ComfyGenRuntime
 }
 
 // === app-prefs ==============================================================
@@ -344,6 +356,22 @@ export async function wizardAttach(endpoint_id: string, volume_id?: string): Pro
   })
   await _throwIfNonOk(res)
   return (await res.json()) as EndpointRecord
+}
+
+export async function wizardRemoteAttach(base_url: string, token: string): Promise<ComfyGenRuntime> {
+  const res = await fetch('/api/wizard/comfygen/remote/attach', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base_url, token }),
+  })
+  await _throwIfNonOk(res)
+  return (await res.json()) as ComfyGenRuntime
+}
+
+export async function wizardRemoteDetach(): Promise<ComfyGenRuntime> {
+  const res = await fetch('/api/wizard/comfygen/remote/detach', { method: 'POST' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as ComfyGenRuntime
 }
 
 export async function wizardHealth(endpoint_id: string): Promise<EndpointHealth> {

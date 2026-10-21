@@ -18,7 +18,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from backend import config
 
@@ -86,6 +86,12 @@ def init_db() -> None:
                     max_workers INTEGER,
                     provisioned_at TEXT,
                     updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS settings_comfygen_runtime (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    runtime_kind TEXT NOT NULL CHECK (runtime_kind IN ('serverless', 'dedicated')),
+                    base_url TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS settings_app_prefs (
@@ -388,6 +394,58 @@ def delete_endpoint(type: str) -> None:
             conn.commit()
         finally:
             conn.close()
+
+
+# === ComfyGen runtime =======================================================
+
+ComfyGenRuntimeKind = Literal["serverless", "dedicated"]
+
+
+def set_comfygen_runtime(
+    *,
+    runtime_kind: ComfyGenRuntimeKind,
+    base_url: str | None = None,
+) -> None:
+    """Persist the active ComfyGen runtime without changing endpoint records."""
+    if runtime_kind not in ("serverless", "dedicated"):
+        raise ValueError(f"unsupported ComfyGen runtime: {runtime_kind}")
+
+    resolved_url = base_url.strip() if base_url else None
+    if runtime_kind == "dedicated" and not resolved_url:
+        raise ValueError("base_url is required for the dedicated ComfyGen runtime")
+    if runtime_kind == "serverless":
+        resolved_url = None
+
+    with _lock:
+        conn = _get_conn()
+        try:
+            conn.execute(
+                """
+                INSERT INTO settings_comfygen_runtime (id, runtime_kind, base_url)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    runtime_kind=excluded.runtime_kind,
+                    base_url=excluded.base_url
+                """,
+                (runtime_kind, resolved_url),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_comfygen_runtime() -> dict[str, Any]:
+    """Return the configured runtime, defaulting old installs to serverless."""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT runtime_kind, base_url FROM settings_comfygen_runtime WHERE id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return {"runtime_kind": "serverless", "base_url": None}
+    return {"runtime_kind": row["runtime_kind"], "base_url": row["base_url"]}
 
 
 # === app_prefs ==============================================================

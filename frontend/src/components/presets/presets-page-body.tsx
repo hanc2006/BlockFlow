@@ -254,6 +254,7 @@ export function PresetsPageBody() {
         </AlertPanel>
       )}
 
+      {/* TODO: CHECK THE PROGRESS BAR NOT REFRESH THE PROGRESS */}
       {progress && progress.state !== 'idle' && (
         <InstallProgressCard
           progress={progress}

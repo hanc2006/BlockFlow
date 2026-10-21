@@ -940,6 +940,58 @@ def test_attach_400_when_runpod_key_missing(client):
     assert "runpod_api_key" in r.json()["detail"]
 
 
+def test_remote_attach_validates_then_persists_runtime_and_secret(client, mocker):
+    settings_store.set_endpoint("comfygen", endpoint_id="ep_serverless")
+    validate = mocker.patch.object(
+        wizard_routes,
+        "validate_remote_comfygen_server",
+        create=True,
+        return_value="https://gpu.example.com:8000",
+    )
+
+    response = client.post("/api/wizard/comfygen/remote/attach", json={
+        "base_url": "https://gpu.example.com:8000/",
+        "token": "remote-secret",
+    })
+
+    assert response.status_code == 200
+    validate.assert_called_once_with("https://gpu.example.com:8000/", "remote-secret")
+    assert response.json() == {
+        "runtime_kind": "dedicated",
+        "base_url": "https://gpu.example.com:8000",
+        "has_token": True,
+    }
+    assert settings_store.get_comfygen_runtime() == {
+        "runtime_kind": "dedicated",
+        "base_url": "https://gpu.example.com:8000",
+    }
+    assert settings_store.get_credential("comfygen_remote_token") == "remote-secret"
+    assert settings_store.get_endpoint("comfygen")["endpoint_id"] == "ep_serverless"
+
+
+def test_remote_attach_failure_preserves_existing_configuration(client, mocker):
+    settings_store.set_comfygen_runtime(
+        runtime_kind="dedicated",
+        base_url="https://old.example.com",
+    )
+    settings_store.set_credential("comfygen_remote_token", "old-secret")
+    mocker.patch.object(
+        wizard_routes,
+        "validate_remote_comfygen_server",
+        create=True,
+        side_effect=RuntimeError("HTTP 401"),
+    )
+
+    response = client.post("/api/wizard/comfygen/remote/attach", json={
+        "base_url": "https://new.example.com",
+        "token": "new-secret",
+    })
+
+    assert response.status_code == 400
+    assert settings_store.get_comfygen_runtime()["base_url"] == "https://old.example.com"
+    assert settings_store.get_credential("comfygen_remote_token") == "old-secret"
+
+
 # === sgs-ui-5nn: provision + attach validation gating =======================
 
 def test_provision_refuses_when_runpod_unvalidated(client, all_creds_configured, mocker):
