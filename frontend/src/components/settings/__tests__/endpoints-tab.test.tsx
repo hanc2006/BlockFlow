@@ -12,6 +12,13 @@ import userEvent from '@testing-library/user-event'
 
 vi.mock('@/lib/settings/client', () => ({
   listEndpoints: vi.fn(),
+  getComfyGenRuntime: vi.fn().mockResolvedValue({
+    runtime_kind: 'serverless',
+    base_url: null,
+    has_token: false,
+  }),
+  wizardRemoteAttach: vi.fn(),
+  wizardRemoteDetach: vi.fn(),
   // Stubs for the wizard component the Set Up button mounts.
   // sgs-ui-5nn: `services` map + new client functions added.
   wizardPreflight: vi.fn().mockResolvedValue({
@@ -50,6 +57,29 @@ describe('EndpointsTab — rendering', () => {
 
     expect(await screen.findByRole('heading', { name: /ComfyGen/ })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /AIO LoRA Trainer/ })).toBeInTheDocument()
+  })
+
+  test('attaches a dedicated ComfyGen server using its URL and bearer token', async () => {
+    vi.mocked(client.listEndpoints).mockResolvedValue([])
+    vi.mocked(client.wizardRemoteAttach).mockResolvedValue({
+      runtime_kind: 'dedicated',
+      base_url: 'https://gpu.example.com:8000',
+      has_token: true,
+    })
+    const user = userEvent.setup()
+    render(<EndpointsTab />)
+
+    await user.click(await screen.findByRole('button', { name: /Attach persistent host/i }))
+    await user.type(screen.getByLabelText('Server URL'), 'https://gpu.example.com:8000')
+    await user.type(screen.getByLabelText('Bearer token'), 'secret-token')
+    await user.click(screen.getByRole('button', { name: /Connect remote server/i }))
+
+    await waitFor(() => expect(client.wizardRemoteAttach).toHaveBeenCalledWith(
+      'https://gpu.example.com:8000',
+      'secret-token',
+    ))
+    expect(await screen.findByText('https://gpu.example.com:8000')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('secret-token')).not.toBeInTheDocument()
   })
 
   test('unconfigured row shows "Not configured" status', async () => {
@@ -141,8 +171,8 @@ describe('EndpointsTab — rendering', () => {
     vi.mocked(client.listEndpoints).mockResolvedValue([])
     render(<EndpointsTab />)
 
-    const headings = await screen.findAllByRole('heading', { level: 3 })
-    // Headings within the tab — there's "ComfyGen" and "AIO LoRA Trainer"
+    const headings = (await screen.findAllByRole('heading', { level: 3 }))
+      .filter((heading) => /ComfyGen|AIO LoRA Trainer/.test(heading.textContent ?? ''))
     expect(headings[0].textContent).toMatch(/ComfyGen/)
     expect(headings[1].textContent).toMatch(/AIO LoRA Trainer/)
   })

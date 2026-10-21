@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -126,7 +127,51 @@ class AttachBody(BaseModel):
     volume_id: str | None = None
 
 
+class RemoteAttachBody(BaseModel):
+    base_url: str = Field(..., min_length=1)
+    token: str = Field(..., min_length=1)
+
+
 # === helpers ================================================================
+
+def validate_remote_comfygen_server(base_url: str, token: str) -> str:
+    """Validate and normalize a ComfyGen compatibility-server URL."""
+    parsed = urlsplit(base_url.strip())
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Enter an HTTP(S) server URL without embedded credentials, query, or fragment")
+
+    normalized = urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    if not token.strip():
+        raise ValueError("A bearer token is required")
+
+    try:
+        response = runpod_api._cffi_requests.get(
+            f"{normalized}/health",
+            headers={
+                "Authorization": f"Bearer {token.strip()}",
+                "User-Agent": runpod_api.USER_AGENT,
+            },
+            timeout=10,
+            allow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"health check returned HTTP {response.status_code}")
+        body = response.json()
+    except Exception as exc:
+        if isinstance(exc, (ValueError, RuntimeError)):
+            raise
+        raise RuntimeError(f"could not reach compatibility server: {exc}") from exc
+
+    if not isinstance(body, dict) or body.get("ok") is not True or body.get("status") != "healthy":
+        raise RuntimeError("server did not return the expected healthy ComfyGen response")
+    return normalized
 
 def _required_creds_present() -> tuple[bool, list[str]]:
     """Returns (ready, missing_credentials)."""
@@ -648,6 +693,33 @@ def attach(body: AttachBody) -> JSONResponse:
 
     ep = settings_store.get_endpoint("comfygen")
     return JSONResponse(ep)
+
+
+@router.post("/api/wizard/comfygen/remote/attach")
+def attach_remote(body: RemoteAttachBody) -> JSONResponse:
+    try:
+        normalized_url = validate_remote_comfygen_server(body.base_url, body.token)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    settings_store.set_credential("comfygen_remote_token", body.token.strip())
+    settings_store.set_comfygen_runtime(runtime_kind="dedicated", base_url=normalized_url)
+    return JSONResponse({
+        "runtime_kind": "dedicated",
+        "base_url": normalized_url,
+        "has_token": True,
+    })
+
+
+@router.post("/api/wizard/comfygen/remote/detach")
+def detach_remote() -> JSONResponse:
+    settings_store.set_comfygen_runtime(runtime_kind="serverless")
+    settings_store.delete_credential("comfygen_remote_token")
+    return JSONResponse({
+        "runtime_kind": "serverless",
+        "base_url": None,
+        "has_token": False,
+    })
 
 
 @router.get("/api/wizard/comfygen/health/{endpoint_id}")

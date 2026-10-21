@@ -109,6 +109,15 @@ def delete_endpoint(type: str) -> Response:
     return Response(status_code=204)
 
 
+@router.get("/api/settings/comfygen-runtime")
+def get_comfygen_runtime() -> JSONResponse:
+    runtime = settings_store.get_comfygen_runtime()
+    return JSONResponse({
+        **runtime,
+        "has_token": bool(settings_store.get_credential("comfygen_remote_token")),
+    })
+
+
 # === app_prefs ==============================================================
 
 @router.get("/api/settings/app-prefs/{name}")

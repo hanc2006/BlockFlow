@@ -265,6 +265,44 @@ def test_delete_endpoint_idempotent_when_unset(store):
     store.delete_endpoint("never_existed")  # must not raise
 
 
+# === ComfyGen runtime =======================================================
+
+def test_comfygen_runtime_defaults_to_serverless(store):
+    assert store.get_comfygen_runtime() == {
+        "runtime_kind": "serverless",
+        "base_url": None,
+    }
+
+
+def test_comfygen_remote_runtime_does_not_overwrite_serverless_endpoint(store):
+    store.set_endpoint("comfygen", endpoint_id="ep_existing", volume_id="vol_existing")
+
+    store.set_comfygen_runtime(
+        runtime_kind="dedicated",
+        base_url="https://gpu.example.com:8000",
+    )
+
+    assert store.get_comfygen_runtime() == {
+        "runtime_kind": "dedicated",
+        "base_url": "https://gpu.example.com:8000",
+    }
+    assert store.get_endpoint("comfygen")["endpoint_id"] == "ep_existing"
+
+
+def test_comfygen_runtime_switch_back_clears_remote_url(store):
+    store.set_comfygen_runtime(
+        runtime_kind="dedicated",
+        base_url="http://gpu.internal:8000",
+    )
+
+    store.set_comfygen_runtime(runtime_kind="serverless")
+
+    assert store.get_comfygen_runtime() == {
+        "runtime_kind": "serverless",
+        "base_url": None,
+    }
+
+
 # === app_prefs ==============================================================
 
 def test_app_pref_round_trip(store):

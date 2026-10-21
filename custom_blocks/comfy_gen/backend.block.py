@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from backend import comfy_gen_cli, config, db, media_meta, services, state
+from backend import comfy_gen_cli, comfygen_remote, config, db, media_meta, services, settings_store, state
 
 router = APIRouter()
 
@@ -156,12 +156,53 @@ def _run_refresh(cmd: list[str]) -> None:
         _refresh_state["running"] = False
 
 
+def _run_remote_refresh(base_url: str, token: str) -> None:
+    try:
+        data = comfygen_remote.request_json(base_url, token, "GET", "/inventory")
+        if data.get("ok") is not True:
+            raise RuntimeError(str(data.get("error") or "Remote inventory returned not ok"))
+        models = data.get("models") if isinstance(data.get("models"), dict) else {}
+        loras = models.get("loras") if isinstance(models.get("loras"), list) else []
+        _cache["samplers"] = [item for item in data.get("samplers", []) if isinstance(item, str)]
+        _cache["schedulers"] = [item for item in data.get("schedulers", []) if isinstance(item, str)]
+        _cache["lora_details"] = [{"filename": item} for item in loras if isinstance(item, str)]
+        _cache["loras"] = [item["filename"] for item in _cache["lora_details"]]
+        _cache["fetched_at"] = time.time()
+        _save_cache_to_disk()
+        _refresh_state["status"] = (
+            f"Done — {len(_cache['samplers'])} samplers, "
+            f"{len(_cache['schedulers'])} schedulers, {len(_cache['loras'])} loras"
+        )
+    except Exception as exc:
+        _refresh_state["error"] = str(exc)
+    finally:
+        _refresh_state["done"] = True
+        _refresh_state["running"] = False
+
+
 @router.post("/refresh-cache")
 def refresh_cache(payload: dict[str, Any] = {}) -> JSONResponse:
     """Start comfy-gen info in background, returns immediately."""
     with _refresh_lock:
         if _refresh_state["running"]:
             return JSONResponse({"ok": True, "already_running": True})
+
+        runtime = settings_store.get_comfygen_runtime()
+        if runtime["runtime_kind"] == "dedicated":
+            base_url = str(runtime.get("base_url") or "")
+            token = (settings_store.get_credential("comfygen_remote_token") or "").strip()
+            if not base_url or not token:
+                return JSONResponse({
+                    "ok": False,
+                    "error": "Dedicated ComfyGen server URL and bearer token are required",
+                }, status_code=400)
+            _refresh_state["running"] = True
+            _refresh_state["done"] = False
+            _refresh_state["error"] = ""
+            _refresh_state["status"] = "Starting remote inventory refresh..."
+            t = threading.Thread(target=_run_remote_refresh, args=(base_url, token), daemon=True)
+            t.start()
+            return JSONResponse({"ok": True, "started": True})
 
         try:
             comfy_gen = comfy_gen_cli.resolve_comfy_gen()
@@ -2449,6 +2490,190 @@ def _find_model_root_anchors(workflow: dict) -> dict[str, int]:
     return roots
 
 
+def _remote_override_payload(overrides: dict[str, str] | None) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for key, raw_value in (overrides or {}).items():
+        node_id, separator, field_name = key.partition(".")
+        if not separator or not node_id or not field_name:
+            continue
+        try:
+            value = json.loads(raw_value)
+        except (json.JSONDecodeError, TypeError):
+            value = raw_value
+        result.setdefault(node_id, {})[field_name] = value
+    return result
+
+
+def _dedicated_cancel_event(job_id: str) -> threading.Event | None:
+    with state.JOBS_LOCK:
+        job = state.JOBS.get(job_id)
+        event = job.get("_cancel_event") if job else None
+    return event if isinstance(event, threading.Event) else None
+
+
+def _run_dedicated_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
+                             overrides: dict[str, str] | None = None,
+                             source: str = "", batch_id: str = "") -> None:
+    started = time.time()
+    try:
+        runtime = settings_store.get_comfygen_runtime()
+        base_url = str(runtime.get("base_url") or "")
+        token = (settings_store.get_credential("comfygen_remote_token") or "").strip()
+        if not base_url or not token:
+            raise RuntimeError("Dedicated ComfyGen server URL and bearer token are required")
+        cancel_event = _dedicated_cancel_event(job_id)
+
+        workflow = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
+        uploaded_inputs: dict[str, dict[str, str]] = {}
+        for node_id, local_path in file_inputs.items():
+            if cancel_event and cancel_event.is_set():
+                return
+            node = workflow.get(node_id, {})
+            class_type = node.get("class_type", "") if isinstance(node, dict) else ""
+            field_name = "video" if "video" in str(class_type).lower() else "image"
+            uploaded_inputs[node_id] = comfygen_remote.upload_input(
+                base_url, token, field_name, local_path,
+            )
+
+        if cancel_event and cancel_event.is_set():
+            return
+
+        for node_id, uploaded in uploaded_inputs.items():
+            node = workflow.get(node_id)
+            if not isinstance(node, dict):
+                raise RuntimeError(f"Workflow has no node {node_id} for uploaded input")
+            inputs = node.setdefault("inputs", {})
+            subfolder = uploaded.get("subfolder", "").strip("/")
+            inputs[uploaded["field"]] = (
+                f"{subfolder}/{uploaded['name']}" if subfolder else uploaded["name"]
+            )
+
+        services._update_job(job_id, status="SUBMITTING", progress_stage="submit",
+                             progress_message="Submitting to persistent ComfyGen server...")
+        submitted = comfygen_remote.request_json(base_url, token, "POST", "/run", {
+            "input": {
+                "workflow": workflow,
+                "file_inputs": uploaded_inputs,
+                "overrides": _remote_override_payload(overrides),
+                "timeout": config.POLL_TIMEOUT_SEC,
+            },
+        })
+        remote_job_id = str(submitted.get("id") or submitted.get("job_id") or "")
+        if not remote_job_id:
+            raise RuntimeError("Compatibility server did not return a job ID")
+        if cancel_event and cancel_event.is_set():
+            comfygen_remote.request_json(
+                base_url, token, "POST", "/cancel", {"job_id": remote_job_id},
+            )
+            return
+        services._update_job(job_id, status="RUNNING", remote_job_id=remote_job_id,
+                             runtime_kind="dedicated", progress_stage="queue",
+                             progress_message="Waiting for persistent ComfyGen server...")
+
+        deadline = time.monotonic() + config.POLL_TIMEOUT_SEC
+        terminal: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            status_body = comfygen_remote.request_json(
+                base_url, token, "GET", f"/status/{remote_job_id}", timeout=30,
+            )
+            remote_status = str(status_body.get("status") or "UNKNOWN").upper()
+            progress_output = status_body.get("output")
+            if isinstance(progress_output, dict) and remote_status not in {"COMPLETED", "FAILED", "CANCELLED"}:
+                message = progress_output.get("message") or "ComfyUI is running"
+                services._update_job(job_id, remote_status=remote_status,
+                                     progress_stage="running", progress_message=str(message))
+            if remote_status in {"COMPLETED", "FAILED", "CANCELLED", "UNKNOWN"}:
+                terminal = status_body
+                break
+            if cancel_event and cancel_event.wait(3):
+                return
+            if not cancel_event:
+                time.sleep(3)
+
+        if terminal is None:
+            raise TimeoutError(f"Persistent ComfyGen job did not complete within {config.POLL_TIMEOUT_SEC}s")
+        terminal_status = str(terminal.get("status") or "UNKNOWN").upper()
+        if terminal_status != "COMPLETED":
+            message = terminal.get("error") or f"Persistent ComfyGen job ended with status {terminal_status}"
+            services._update_job(job_id, status="CANCELLED" if terminal_status == "CANCELLED" else "FAILED",
+                                 error=str(message), remote_status=terminal_status,
+                                 elapsed_seconds=round(time.time() - started, 3))
+            return
+
+        envelope = terminal.get("output") if isinstance(terminal.get("output"), dict) else {}
+        output_data = envelope.get("output") if isinstance(envelope.get("output"), dict) else envelope
+        files = output_data.get("files") if isinstance(output_data.get("files"), list) else []
+        if not files:
+            raise RuntimeError("Persistent ComfyGen job completed without output files")
+
+        output_file = files[0]
+        output_index = int(output_file.get("index", 0))
+        output_bytes, content_type = comfygen_remote.download_output(
+            base_url, token, remote_job_id, output_index,
+        )
+        filename = Path(str(output_file.get("filename") or "output")).name
+        suffix = Path(filename).suffix.lower()
+        if not suffix:
+            suffix = ".mp4" if content_type.startswith("video/") else ".png"
+        local_path = config.LOCAL_OUTPUT_DIR / f"{time.strftime('%Y%m%d_%H%M%S')}_comfy_{job_id[:8]}{suffix}"
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(output_bytes)
+        local_url = f"/outputs/{local_path.name}"
+        media_type = str(output_file.get("media_type") or "image")
+        prompt = _extract_override_prompt(output_data, overrides)
+        media_field = "local_video_url" if media_type == "video" else "local_image_url"
+        resolution = output_data.get("resolution") or {}
+        seed = output_data.get("seed")
+        model_hashes = output_data.get("model_hashes") or {}
+        metadata = media_meta.build_generation_meta(
+            prompt=prompt,
+            negative_prompt=output_data.get("negative_prompt", ""),
+            seed=seed,
+            model=output_data.get("model_cls", ""),
+            task_type=output_data.get("task_type", ""),
+            width=resolution.get("width") if isinstance(resolution, dict) else None,
+            height=resolution.get("height") if isinstance(resolution, dict) else None,
+            frames=output_data.get("frames"),
+            fps=output_data.get("fps"),
+            model_hashes=model_hashes or None,
+            lora_hashes=output_data.get("lora_hashes") or None,
+            inference_settings=output_data.get("inference_settings") or None,
+            software="ComfyUI (ComfyGen dedicated host)",
+        )
+        media_meta.embed_metadata(local_path, metadata)
+        update: dict[str, Any] = {
+            "status": "COMPLETED",
+            "remote_job_id": remote_job_id,
+            "local_file": str(local_path),
+            media_field: local_url,
+            "video_url": local_url if media_type == "video" else "",
+            "elapsed_seconds": round(time.time() - started, 3),
+            "prompt": prompt,
+            "seed": seed,
+            "model_hashes": model_hashes,
+            "software": "ComfyUI (ComfyGen dedicated host)",
+        }
+        services._update_job(job_id, **update)
+
+        if source == "mcp" and batch_id:
+            _upsert_mcp_batch_run(batch_id, job_id, local_url, {
+                "prompt": prompt,
+                "software": "ComfyUI (ComfyGen dedicated host)",
+                "job_ids": [job_id],
+                **({"overrides": overrides} if overrides else {}),
+            })
+    except Exception as exc:
+        services._update_job(job_id, status="FAILED", error=str(exc),
+                             elapsed_seconds=round(time.time() - started, 3))
+    finally:
+        try:
+            os.unlink(workflow_path)
+        except OSError:
+            pass
+        if source == "mcp":
+            _publish_event({"type": "mcp", "job_id": job_id, "batch_id": batch_id, "phase": "end"})
+
+
 def _resolve_added_loras(workflow: dict, added: list[dict]) -> tuple[list[dict] | None, str | None]:
     """Validate + auto-anchor runtime-added LoRAs before insertion. Returns
     (resolved, None) on success or (None, error). Fails loud instead of letting
@@ -2697,6 +2922,7 @@ async def run(request: Request) -> JSONResponse:
         print(f"[comfy-gen] Job {job_id} power_lora_overrides: {json.dumps(power_lora_overrides, default=str)}", flush=True)
 
     record = services._new_job_record(job_id, endpoint_id, {"workflow_file": tmp.name})
+    record["_cancel_event"] = threading.Event()
     if source:
         record["source"] = source
         record["overrides"] = overrides  # live strip shows prompt/settings before completion
@@ -2817,6 +3043,9 @@ def cancel(job_id: str) -> JSONResponse:
         if not job:
             return JSONResponse({"ok": False, "error": "Job not found or already finished"}, status_code=404)
         proc: subprocess.Popen | None = job.pop("_proc", None)
+        cancel_event = job.get("_cancel_event")
+        if isinstance(cancel_event, threading.Event):
+            cancel_event.set()
         remote_job_id: str = job.get("remote_job_id") or ""
         endpoint_id: str = job.get("endpoint_id") or ""
 
@@ -2839,35 +3068,51 @@ def cancel(job_id: str) -> JSONResponse:
     remote_cancel_status = "no_remote_id"
     remote_cancel_error = ""
     if remote_job_id:
-        try:
-            comfy_gen = comfy_gen_cli.resolve_comfy_gen()
-            cmd = comfy_gen.command("cancel", remote_job_id)
-            if endpoint_id:
-                cmd.extend(["--endpoint-id", endpoint_id])
-            print(f"[comfy-gen] Cancel command: {' '.join(cmd)}", flush=True)
-            with comfy_gen_cli.settings_subprocess_env(endpoint_id=endpoint_id) as env:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
-            if result.returncode == 0:
+        if settings_store.get_comfygen_runtime()["runtime_kind"] == "dedicated":
+            try:
+                runtime = settings_store.get_comfygen_runtime()
+                base_url = str(runtime.get("base_url") or "")
+                token = (settings_store.get_credential("comfygen_remote_token") or "").strip()
+                if not base_url or not token:
+                    raise RuntimeError("Dedicated ComfyGen server URL and bearer token are required")
+                comfygen_remote.request_json(
+                    base_url, token, "POST", "/cancel", {"job_id": remote_job_id},
+                )
                 cancelled_remote = True
                 remote_cancel_status = "ok"
-                print(f"[comfy-gen] Cancelled remote job {remote_job_id} for {job_id}", flush=True)
-            else:
+            except Exception as e:
                 remote_cancel_status = "error"
-                remote_cancel_error = (result.stderr.strip() or result.stdout.strip()
-                                       or f"exit {result.returncode}")
-                print(f"[comfy-gen] Cancel exit {result.returncode}: {remote_cancel_error}", flush=True)
-            if result.stdout.strip():
-                print(f"[comfy-gen] Cancel stdout: {result.stdout.strip()}", flush=True)
-            if result.stderr.strip():
-                print(f"[comfy-gen] Cancel stderr: {result.stderr.strip()}", flush=True)
-        except subprocess.TimeoutExpired:
-            remote_cancel_status = "timeout"
-            remote_cancel_error = "RunPod cancel API did not respond within 30s"
-            print(f"[comfy-gen] Cancel timeout for remote job {remote_job_id}", flush=True)
-        except Exception as e:
-            remote_cancel_status = "error"
-            remote_cancel_error = str(e)
-            print(f"[comfy-gen] Failed to cancel remote job {remote_job_id}: {e}", flush=True)
+                remote_cancel_error = str(e)
+        else:
+            try:
+                comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+                cmd = comfy_gen.command("cancel", remote_job_id)
+                if endpoint_id:
+                    cmd.extend(["--endpoint-id", endpoint_id])
+                print(f"[comfy-gen] Cancel command: {' '.join(cmd)}", flush=True)
+                with comfy_gen_cli.settings_subprocess_env(endpoint_id=endpoint_id) as env:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
+                if result.returncode == 0:
+                    cancelled_remote = True
+                    remote_cancel_status = "ok"
+                    print(f"[comfy-gen] Cancelled remote job {remote_job_id} for {job_id}", flush=True)
+                else:
+                    remote_cancel_status = "error"
+                    remote_cancel_error = (result.stderr.strip() or result.stdout.strip()
+                                           or f"exit {result.returncode}")
+                    print(f"[comfy-gen] Cancel exit {result.returncode}: {remote_cancel_error}", flush=True)
+                if result.stdout.strip():
+                    print(f"[comfy-gen] Cancel stdout: {result.stdout.strip()}", flush=True)
+                if result.stderr.strip():
+                    print(f"[comfy-gen] Cancel stderr: {result.stderr.strip()}", flush=True)
+            except subprocess.TimeoutExpired:
+                remote_cancel_status = "timeout"
+                remote_cancel_error = "RunPod cancel API did not respond within 30s"
+                print(f"[comfy-gen] Cancel timeout for remote job {remote_job_id}", flush=True)
+            except Exception as e:
+                remote_cancel_status = "error"
+                remote_cancel_error = str(e)
+                print(f"[comfy-gen] Failed to cancel remote job {remote_job_id}: {e}", flush=True)
 
     services._update_job(job_id, status="CANCELLED", error="Cancelled by user")
 

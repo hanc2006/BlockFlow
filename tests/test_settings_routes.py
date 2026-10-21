@@ -220,6 +220,24 @@ def test_put_endpoint_update_is_full_replace(client):
     assert body["volume_id"] is None  # cleared, not preserved
 
 
+def test_get_comfygen_runtime_hides_remote_token(client):
+    settings_store.set_comfygen_runtime(
+        runtime_kind="dedicated",
+        base_url="https://gpu.example.com:8000",
+    )
+    settings_store.set_credential("comfygen_remote_token", "secret-token")
+
+    response = client.get("/api/settings/comfygen-runtime")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "runtime_kind": "dedicated",
+        "base_url": "https://gpu.example.com:8000",
+        "has_token": True,
+    }
+    assert "secret-token" not in response.text
+
+
 # === app_prefs CRUD =========================================================
 
 def test_app_pref_put_then_get(client, tmp_path):
