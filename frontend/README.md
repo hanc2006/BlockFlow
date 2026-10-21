@@ -58,8 +58,10 @@ cp .env.example .env
 # Required for RunPod-based generation
 RUNPOD_API_KEY=your_runpod_api_key
 
-# Required for prompt writing (uses OpenRouter)
-OPENROUTER_API_KEY=your_openrouter_api_key
+# Required for prompt writing (OpenAI-compatible Chat Completions API)
+OPENAI_API_KEY=your_openai_compatible_api_key
+# Optional — defaults to https://api.openai.com/v1; can also be set in Settings
+# OPENAI_BASE_URL=https://api.openai.com/v1
 
 # Optional — only needed for the blocks that use them
 CIVITAI_API_KEY=your_civitai_api_key       # CivitAI Share block
@@ -185,12 +187,16 @@ The **Artifacts** tab shows all your output files. Files with embedded metadata 
 | Key | Used for |
 |-----|---------|
 | `RUNPOD_API_KEY` | Submitting jobs to RunPod serverless endpoints |
-| `OPENROUTER_API_KEY` | Prompt Writer and I2V Prompt Writer (LLM calls) |
+| `OPENAI_API_KEY` | Prompt, multimodal, dataset-caption, and auto-tag LLM calls |
+| `OPENAI_BASE_URL` | Optional OpenAI-compatible API root; defaults to `https://api.openai.com/v1` |
 | `CIVITAI_API_KEY` | CivitAI Share block (publishing posts) |
 | `TOPAZ_API_KEY` | Video Upscale and Image Upscale blocks |
 | AWS credentials | Downloading outputs from S3 (if your RunPod worker writes to S3) |
 
 If you don't use a particular block, you don't need that key.
+Provider keys and the API base URL can also be configured in Settings. Legacy
+`OPENROUTER_API_KEY` and `OPENROUTER_API_BASE` environment values remain fallback
+options for existing installations.
 
 ---
 

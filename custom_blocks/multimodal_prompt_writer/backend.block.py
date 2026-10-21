@@ -1,14 +1,14 @@
 """Multi-modal prompt writer.
 
 Sends multiple images / video / audio / text references to a vision-capable
-OpenRouter chat-completion model and asks it to synthesize a unified prompt
+OpenAI-compatible chat-completion model and asks it to synthesize a unified prompt
 suitable for downstream video / image generation blocks (Seedance, NB2,
 ComfyGen, etc.).
 
 Mirrors the i2v_prompt_writer block, but:
 - Accepts N images (not just one).
 - Optionally accepts a video URL and an audio URL.
-- The /models endpoint filters OpenRouter's catalogue down to models that
+- The /models endpoint filters the provider catalogue down to models that
   actually declare image (and optionally video / audio) input modalities.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-OPENROUTER_IMAGE_PAYLOAD_LIMIT_BYTES = 20 * 1024 * 1024
+OPENAI_COMPATIBLE_IMAGE_PAYLOAD_LIMIT_BYTES = 20 * 1024 * 1024
 
 _N_PROMPTS_DIRECTIVE = (
     "\n\n"
@@ -66,24 +66,8 @@ def _parse_prompts_list(text: str) -> list[str]:
     return [text]
 
 
-def _build_prompts_response_format() -> dict[str, Any]:
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "prompts",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {"prompts": {"type": "array", "items": {"type": "string"}}},
-                "required": ["prompts"],
-                "additionalProperties": False,
-            },
-        },
-    }
-
-
 def _modalities(model_obj: dict[str, Any]) -> set[str]:
-    # services._get_openrouter_models returns normalized rows with
+    # services._get_openai_compatible_models returns normalized rows with
     # `input_modalities` at the top level. Fall back to the legacy `modality`
     # string ("text+image->text") if that's missing.
     mods = model_obj.get("input_modalities") if isinstance(model_obj.get("input_modalities"), list) else []
@@ -99,7 +83,7 @@ def get_settings() -> JSONResponse:
     settings = state._get_writer_settings()
     return JSONResponse({
         "ok": True,
-        "has_api_key": bool(config.OPENROUTER_API_KEY),
+        "has_api_key": bool(services._get_openai_compatible_config()["api_key"]),
         "settings": settings,
         "fanout_limits": {
             "max_variants": config.PROMPT_WRITER_FANOUT_MAX_VARIANTS,
@@ -114,7 +98,7 @@ async def save_settings(request: Request) -> JSONResponse:
     updated = state._update_writer_settings(**payload)
     return JSONResponse({
         "ok": True,
-        "has_api_key": bool(config.OPENROUTER_API_KEY),
+        "has_api_key": bool(services._get_openai_compatible_config()["api_key"]),
         "settings": updated,
         "fanout_limits": {
             "max_variants": config.PROMPT_WRITER_FANOUT_MAX_VARIANTS,
@@ -130,15 +114,12 @@ def get_models(
     require_video: int = Query(0),
     require_audio: int = Query(0),
 ) -> JSONResponse:
-    """Return OpenRouter models filtered by what input modalities they accept.
+    """Return provider models filtered by declared input modalities.
 
-    The shared services._get_openrouter_models already constrains output to
-    text-producing models. We additionally narrow to those whose
-    input_modalities (or legacy modality string) include the requested
-    channels. Image filter defaults on — that's the minimum to call this a
-    "multi-modal" writer.
+    Models without modality metadata remain selectable because standard
+    OpenAI-compatible `/models` responses do not require capability fields.
     """
-    models, error, from_cache = services._get_openrouter_models(refresh=bool(refresh))
+    models, error, from_cache = services._get_openai_compatible_models(refresh=bool(refresh))
     needs: set[str] = set()
     if require_image:
         needs.add("image")
@@ -150,7 +131,7 @@ def get_models(
     filtered: list[dict[str, Any]] = []
     for m in models:
         mods = _modalities(m)
-        if needs.issubset(mods):
+        if not mods or needs.issubset(mods):
             filtered.append(m)
 
     resp: dict[str, Any] = {
@@ -191,7 +172,7 @@ def _resolve_image_url(raw: str) -> str | None:
 
 
 def _resolve_image_urls_for_payload(image_urls: list[str]) -> list[str]:
-    """Resolve image refs for OpenRouter while keeping local data URIs under budget."""
+    """Resolve local image refs while keeping data URIs under the payload budget."""
     resolved: list[str | None] = [None] * len(image_urls)
     local_sources: list[tuple[int, image_payload.ImagePayloadSource]] = []
 
@@ -218,7 +199,7 @@ def _resolve_image_urls_for_payload(image_urls: list[str]) -> list[str]:
     if local_sources:
         prepared = image_payload.prepare_data_uris_for_payload(
             [src for _, src in local_sources],
-            max_payload_bytes=OPENROUTER_IMAGE_PAYLOAD_LIMIT_BYTES,
+            max_payload_bytes=OPENAI_COMPATIBLE_IMAGE_PAYLOAD_LIMIT_BYTES,
         )
         for (idx, _), item in zip(local_sources, prepared, strict=True):
             resolved[idx] = item.data_uri
@@ -227,7 +208,7 @@ def _resolve_image_urls_for_payload(image_urls: list[str]) -> list[str]:
 
 
 def _resolve_fetchable_media_url(raw: str) -> str:
-    """Resolve local video/audio refs to public URLs for OpenRouter fetch."""
+    """Resolve local video/audio refs to public URLs for provider fetch."""
     if not raw or not tmpfiles.is_local_path(raw):
         return raw
     return tmpfiles.ensure_public_url(raw)
@@ -273,9 +254,7 @@ async def generate(request: Request) -> JSONResponse:
 
     messages: list[dict[str, Any]] = []
     if effective_system_prompt:
-        messages.append({"role": "system", "content": [
-            {"type": "text", "text": effective_system_prompt, "cache_control": {"type": "ephemeral"}},
-        ]})
+        messages.append({"role": "system", "content": effective_system_prompt})
 
     # Compose user message: text framing + image parts + optional video / audio.
     content: list[dict[str, Any]] = []
@@ -297,8 +276,7 @@ async def generate(request: Request) -> JSONResponse:
 
     if audio_url:
         content.append({"type": "text", "text": "Reference audio:"})
-        # OpenRouter's audio input shape is `input_audio` with a base64 payload.
-        # We pass a URL via the `format=url` hint and let the provider fetch.
+        # Audio and video content parts are provider-specific extensions.
         content.append({"type": "input_audio", "input_audio": {"data": audio_url, "format": "url"}})
 
     messages.append({"role": "user", "content": content})
@@ -308,14 +286,11 @@ async def generate(request: Request) -> JSONResponse:
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max(max_tokens, num_prompts * 1500) if num_prompts > 1 else max_tokens,
-        "reasoning": {"effort": "medium"},
     }
-    if num_prompts > 1:
-        body["response_format"] = _build_prompts_response_format()
 
     try:
-        resp = services._openrouter_request_json("POST", "/chat/completions", body, timeout=240)
-        text = services._extract_openrouter_completion_text(resp)
+        resp = services._openai_compatible_request_json("POST", "/chat/completions", body, timeout=240)
+        text = services._extract_openai_compatible_completion_text(resp)
         if num_prompts == 1:
             return JSONResponse({"ok": True, "output_text": text})
 
@@ -333,5 +308,5 @@ async def generate(request: Request) -> JSONResponse:
             "requested": num_prompts,
         })
     except Exception as e:
-        log.exception("[multimodal_prompt_writer] OpenRouter call failed")
+        log.exception("[multimodal_prompt_writer] OpenAI-compatible provider call failed")
         return JSONResponse({"ok": False, "error": str(e)})

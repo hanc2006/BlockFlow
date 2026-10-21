@@ -117,9 +117,7 @@ def _caption_one(model: str, system_prompt: str, user_prompt: str,
     image_url = _image_to_data_uri(image_path)
     messages: list[dict[str, Any]] = []
     if system_prompt:
-        messages.append({"role": "system", "content": [
-            {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}},
-        ]})
+        messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": [
         {"type": "image_url", "image_url": {"url": image_url}},
         {"type": "text", "text": user_prompt},
@@ -129,13 +127,9 @@ def _caption_one(model: str, system_prompt: str, user_prompt: str,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        # Captioning is shallow — use minimal reasoning so most of the
-        # max_tokens budget goes to the visible caption. Some models
-        # (e.g. Gemini 3.5 Flash) reject `effort: none`, so use `low`.
-        "reasoning": {"effort": "low"},
     }
-    resp = services._openrouter_request_json("POST", "/chat/completions", body, timeout=180)
-    text = services._extract_openrouter_completion_text(resp) or ""
+    resp = services._openai_compatible_request_json("POST", "/chat/completions", body, timeout=180)
+    text = services._extract_openai_compatible_completion_text(resp) or ""
     # Clean up — strip quotes, trailing periods optional, single line
     text = text.strip().strip('"').strip("'").strip()
     # Drop any leading "Caption:" / "Description:" preambles the model adds
@@ -258,7 +252,7 @@ def _run_captioning(job_id: str, dataset_dir: Path, model: str,
 def health() -> JSONResponse:
     return JSONResponse({
         "ok": True,
-        "openrouter_key_present": bool(config.OPENROUTER_API_KEY),
+        "openai_compatible_key_present": bool(services._get_openai_compatible_config()["api_key"]),
         "default_system_prompt": _render_default_system_prompt(""),
         "default_user_prompt": _render_default_user_prompt(""),
     })
@@ -300,8 +294,8 @@ async def run(request: Request) -> JSONResponse:
 
     if not model:
         return JSONResponse({"ok": False, "error": "model is required"}, status_code=400)
-    if not config.OPENROUTER_API_KEY:
-        return JSONResponse({"ok": False, "error": "OPENROUTER_API_KEY not set in .env"}, status_code=400)
+    if not services._get_openai_compatible_config()["api_key"]:
+        return JSONResponse({"ok": False, "error": "OpenAI-compatible provider API key is not configured"}, status_code=400)
     try:
         dataset_dir, dataset_name = _resolve_dataset_dir(dataset_spec, dataset_folder)
     except ValueError as exc:

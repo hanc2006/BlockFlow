@@ -73,7 +73,7 @@ describe('video_loader run-time re-emit', () => {
       { kind: 'video-ref', local: '/outputs/clip.mp4', url: 'https://tmpfiles.org/dl/abc/clip.mp4' },
     ])
 
-    // And the emitted value must yield a PiAPI/OpenRouter-fetchable URL.
+    // And the emitted value must yield a PiAPI/provider-fetchable URL.
     const emitted = setOutput.mock.calls.find((c) => c[0] === 'video')?.[1]
     expect(toPublicUrls(emitted)).toEqual(['https://tmpfiles.org/dl/abc/clip.mp4'])
   })

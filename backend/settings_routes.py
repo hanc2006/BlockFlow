@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from backend import settings_store, settings_validators
+from backend import services, settings_store, settings_validators
 
 router = APIRouter()
 
@@ -114,6 +114,15 @@ def delete_endpoint(type: str) -> Response:
 @router.get("/api/settings/app-prefs/{name}")
 def get_app_pref(name: str, default: str | None = Query(default=None)) -> JSONResponse:
     return JSONResponse({"name": name, "value": settings_store.get_app_pref(name, default=default)})
+
+
+@router.get("/api/settings/openai-compatible")
+def get_openai_compatible_settings() -> JSONResponse:
+    provider = services._get_openai_compatible_config()
+    return JSONResponse({
+        "base_url": provider["base_url"],
+        "has_api_key": bool(provider["api_key"]),
+    })
 
 
 def _validate_app_pref(name: str, value: str) -> None:

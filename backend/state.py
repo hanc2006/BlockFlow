@@ -24,11 +24,8 @@ WRITER_SETTINGS: dict[str, Any] = {
     "temperature": config.DEFAULT_WRITER_TEMPERATURE,
     "max_tokens": config.DEFAULT_WRITER_MAX_TOKENS,
 }
-OPENROUTER_MODELS_CACHE_LOCK = threading.Lock()
-OPENROUTER_MODELS_CACHE: dict[str, Any] = {
-    "ts": 0.0,
-    "models": [],
-}
+OPENAI_COMPATIBLE_MODELS_CACHE_LOCK = threading.Lock()
+OPENAI_COMPATIBLE_MODELS_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def _persist_jobs_locked() -> None:

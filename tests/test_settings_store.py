@@ -283,6 +283,14 @@ def test_app_pref_update(store):
     assert store.get_app_pref("run_history_retention_days") == "30"
 
 
+def test_changing_openai_base_url_clears_provider_validation(store):
+    store.set_credential_validation("openai_compatible", {"ok": True})
+
+    store.set_app_pref("openai_base_url", "https://inference.example/v1")
+
+    assert store.get_credential_validation("openai_compatible") is None
+
+
 def test_app_pref_value_is_string_typed(store):
     """app_prefs is a simple string-keyed store. Callers serialize numbers/JSON themselves."""
     store.set_app_pref("retention_days", "90")

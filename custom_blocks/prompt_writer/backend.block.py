@@ -19,7 +19,7 @@ def get_settings() -> JSONResponse:
     settings = state._get_writer_settings()
     return JSONResponse({
         "ok": True,
-        "has_api_key": bool(config.OPENROUTER_API_KEY),
+        "has_api_key": bool(services._get_openai_compatible_config()["api_key"]),
         "settings": settings,
         "fanout_limits": {
             "max_variants": config.PROMPT_WRITER_FANOUT_MAX_VARIANTS,
@@ -34,7 +34,7 @@ async def save_settings(request: Request) -> JSONResponse:
     updated = state._update_writer_settings(**payload)
     return JSONResponse({
         "ok": True,
-        "has_api_key": bool(config.OPENROUTER_API_KEY),
+        "has_api_key": bool(services._get_openai_compatible_config()["api_key"]),
         "settings": updated,
         "fanout_limits": {
             "max_variants": config.PROMPT_WRITER_FANOUT_MAX_VARIANTS,
@@ -45,7 +45,7 @@ async def save_settings(request: Request) -> JSONResponse:
 
 @router.get("/models")
 def get_models(refresh: int = Query(0)) -> JSONResponse:
-    models, error, from_cache = services._get_openrouter_models(refresh=bool(refresh))
+    models, error, from_cache = services._get_openai_compatible_models(refresh=bool(refresh))
     resp: dict[str, Any] = {"ok": True, "models": models, "from_cache": from_cache}
     if error:
         resp["warning"] = error
@@ -109,24 +109,6 @@ def _parse_prompts_list(text: str) -> list[str]:
     return [text]
 
 
-def _build_prompts_response_format() -> dict[str, Any]:
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "prompts",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "prompts": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["prompts"],
-                "additionalProperties": False,
-            },
-        },
-    }
-
-
 @router.post("/generate")
 async def generate(request: Request) -> JSONResponse:
     payload = await request.json()
@@ -135,7 +117,6 @@ async def generate(request: Request) -> JSONResponse:
     user_prompt = str(payload.get("user_prompt") or "")
     temperature = float(payload.get("temperature", 0.9))
     max_tokens = int(payload.get("max_tokens", 600))
-    reasoning_effort = str(payload.get("reasoning_effort") or "medium").lower()
     num_prompts = max(1, min(int(payload.get("num_prompts") or 1),
                               max(1, config.PROMPT_WRITER_FANOUT_MAX_VARIANTS)))
 
@@ -151,9 +132,7 @@ async def generate(request: Request) -> JSONResponse:
 
     messages: list[dict[str, Any]] = []
     if effective_system_prompt:
-        messages.append({"role": "system", "content": [
-            {"type": "text", "text": effective_system_prompt, "cache_control": {"type": "ephemeral"}},
-        ]})
+        messages.append({"role": "system", "content": effective_system_prompt})
     messages.append({"role": "user", "content": user_prompt})
 
     body: dict[str, Any] = {
@@ -162,14 +141,9 @@ async def generate(request: Request) -> JSONResponse:
         "temperature": temperature,
         "max_tokens": max(max_tokens, num_prompts * 1500) if num_prompts > 1 else max_tokens,
     }
-    if reasoning_effort in ("low", "medium", "high"):
-        body["reasoning"] = {"effort": reasoning_effort}
-    if num_prompts > 1:
-        body["response_format"] = _build_prompts_response_format()
-
     try:
-        resp = services._openrouter_request_json("POST", "/chat/completions", body, timeout=180)
-        text = services._extract_openrouter_completion_text(resp)
+        resp = services._openai_compatible_request_json("POST", "/chat/completions", body, timeout=180)
+        text = services._extract_openai_compatible_completion_text(resp)
         if num_prompts == 1:
             return JSONResponse({"ok": True, "output_text": text})
 
@@ -189,7 +163,7 @@ async def generate(request: Request) -> JSONResponse:
             "requested": num_prompts,
         })
     except Exception as e:
-        log.exception("[generate] OpenRouter call failed")
+        log.exception("[generate] OpenAI-compatible provider call failed")
         return JSONResponse({"ok": False, "error": str(e)})
 
 
@@ -209,7 +183,10 @@ CRITICAL RULES:
 
 Use the user's exact words and terminology. If the user uses explicit or NSFW language, repeat those same words in each idea — never euphemize, sanitize, or rephrase them.
 
-If the user's description requests a specific setting, mood, style, or aesthetic, that is the highest priority — adapt all choices to serve their vision."""
+If the user's description requests a specific setting, mood, style, or aesthetic, that is the highest priority — adapt all choices to serve their vision.
+
+OUTPUT FORMAT:
+Return only a valid JSON object with an "ideas" array containing exactly the requested number of strings. Do not use markdown fences or add commentary."""
 
 
 @router.post("/generate-ideas")
@@ -219,7 +196,6 @@ async def generate_ideas(request: Request) -> JSONResponse:
     description = str(payload.get("description") or "")
     count = int(payload.get("count", 8))
     temperature = float(payload.get("temperature", 0.9))
-    reasoning_effort = str(payload.get("reasoning_effort") or "medium").lower()
 
     if not model:
         return JSONResponse({"ok": False, "error": "model is required"}, status_code=400)
@@ -229,9 +205,7 @@ async def generate_ideas(request: Request) -> JSONResponse:
     count = max(1, min(count, 64))
 
     messages = [
-        {"role": "system", "content": [
-            {"type": "text", "text": _IDEA_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-        ]},
+        {"role": "system", "content": _IDEA_SYSTEM_PROMPT},
         {"role": "user", "content": f"Generate {count} prompt ideas for: {description}"},
     ]
 
@@ -240,31 +214,11 @@ async def generate_ideas(request: Request) -> JSONResponse:
         "messages": messages,
         "temperature": temperature,
         "max_tokens": count * 1500,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "prompt_ideas",
-                "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "ideas": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                    },
-                    "required": ["ideas"],
-                    "additionalProperties": False,
-                },
-            },
-        },
     }
-    if reasoning_effort in ("low", "medium", "high"):
-        body["reasoning"] = {"effort": reasoning_effort}
 
     try:
-        resp = services._openrouter_request_json("POST", "/chat/completions", body, timeout=120)
-        text = services._extract_openrouter_completion_text(resp)
+        resp = services._openai_compatible_request_json("POST", "/chat/completions", body, timeout=120)
+        text = services._extract_openai_compatible_completion_text(resp)
 
         import json as _json
 

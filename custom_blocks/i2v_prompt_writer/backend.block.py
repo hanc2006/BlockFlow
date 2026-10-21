@@ -63,23 +63,6 @@ def _parse_prompts_list(text: str) -> list[str]:
     return [text]
 
 
-def _build_prompts_response_format() -> dict[str, Any]:
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "prompts",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "prompts": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["prompts"],
-                "additionalProperties": False,
-            },
-        },
-    }
-
 router = APIRouter()
 
 
@@ -88,7 +71,7 @@ def get_settings() -> JSONResponse:
     settings = state._get_writer_settings()
     return JSONResponse({
         "ok": True,
-        "has_api_key": bool(config.OPENROUTER_API_KEY),
+        "has_api_key": bool(services._get_openai_compatible_config()["api_key"]),
         "settings": settings,
         "fanout_limits": {
             "max_variants": config.PROMPT_WRITER_FANOUT_MAX_VARIANTS,
@@ -103,7 +86,7 @@ async def save_settings(request: Request) -> JSONResponse:
     updated = state._update_writer_settings(**payload)
     return JSONResponse({
         "ok": True,
-        "has_api_key": bool(config.OPENROUTER_API_KEY),
+        "has_api_key": bool(services._get_openai_compatible_config()["api_key"]),
         "settings": updated,
         "fanout_limits": {
             "max_variants": config.PROMPT_WRITER_FANOUT_MAX_VARIANTS,
@@ -114,7 +97,7 @@ async def save_settings(request: Request) -> JSONResponse:
 
 @router.get("/models")
 def get_models(refresh: int = Query(0)) -> JSONResponse:
-    models, error, from_cache = services._get_openrouter_models(refresh=bool(refresh))
+    models, error, from_cache = services._get_openai_compatible_models(refresh=bool(refresh))
     resp: dict[str, Any] = {"ok": True, "models": models, "from_cache": from_cache}
     if error:
         resp["warning"] = error
@@ -138,7 +121,7 @@ async def generate(request: Request) -> JSONResponse:
     if not user_prompt and not raw_image_url:
         return JSONResponse({"ok": False, "error": "user_prompt or image_url is required"}, status_code=400)
 
-    # Convert local paths to base64 data URI for OpenRouter vision
+    # Convert local paths to base64 data URI for provider vision input.
     image_url = raw_image_url
     if raw_image_url and tmpfiles.is_local_path(raw_image_url):
         from pathlib import Path
@@ -159,9 +142,7 @@ async def generate(request: Request) -> JSONResponse:
 
     messages: list[dict[str, Any]] = []
     if effective_system_prompt:
-        messages.append({"role": "system", "content": [
-            {"type": "text", "text": effective_system_prompt, "cache_control": {"type": "ephemeral"}},
-        ]})
+        messages.append({"role": "system", "content": effective_system_prompt})
 
     # Build user message with optional image
     if image_url:
@@ -178,14 +159,10 @@ async def generate(request: Request) -> JSONResponse:
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max(max_tokens, num_prompts * 1500) if num_prompts > 1 else max_tokens,
-        "reasoning": {"effort": "medium"},
     }
-    if num_prompts > 1:
-        body["response_format"] = _build_prompts_response_format()
-
     try:
-        resp = services._openrouter_request_json("POST", "/chat/completions", body, timeout=180)
-        text = services._extract_openrouter_completion_text(resp)
+        resp = services._openai_compatible_request_json("POST", "/chat/completions", body, timeout=180)
+        text = services._extract_openai_compatible_completion_text(resp)
         if num_prompts == 1:
             return JSONResponse({"ok": True, "output_text": text})
 
@@ -203,5 +180,5 @@ async def generate(request: Request) -> JSONResponse:
             "requested": num_prompts,
         })
     except Exception as e:
-        log.exception("[i2v generate] OpenRouter call failed")
+        log.exception("[i2v generate] OpenAI-compatible provider call failed")
         return JSONResponse({"ok": False, "error": str(e)})

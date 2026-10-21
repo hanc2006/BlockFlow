@@ -47,8 +47,8 @@ vi.mock('@/lib/settings/client', async (importOriginal) => {
 
 import { blockDef } from '../custom_blocks/generated/comfy_gen'
 
-const WRITER_1 = { value: 'w1', label: '1. Prompt Writer (OpenRouter)' }
-const WRITER_5 = { value: 'w5', label: '5. I2V Prompt Writer (OpenRouter)' }
+const WRITER_1 = { value: 'w1', label: '1. Prompt Writer (OpenAI-compatible)' }
+const WRITER_5 = { value: 'w5', label: '5. I2V Prompt Writer (OpenAI-compatible)' }
 
 const TEXT_OVERRIDES = [
   { node_id: '6', input_name: 'text', current_value: '', label: 'Segment 1 Prompt' },
@@ -61,11 +61,11 @@ beforeAll(() => {
   Element.prototype.releasePointerCapture = () => {}
   Element.prototype.scrollIntoView = () => {}
   registerBlockDef({
-    type: 'promptWriter', label: 'Prompt Writer (OpenRouter)', description: 'p', size: 'sm',
+    type: 'promptWriter', label: 'Prompt Writer (OpenAI-compatible)', description: 'p', size: 'sm',
     inputs: [], outputs: [{ name: 'prompt', kind: 'text' }], canStart: true, component: () => null,
   } as unknown as Parameters<typeof registerBlockDef>[0])
   registerBlockDef({
-    type: 'i2vPromptWriter', label: 'I2V Prompt Writer (OpenRouter)', description: 'p', size: 'sm',
+    type: 'i2vPromptWriter', label: 'I2V Prompt Writer (OpenAI-compatible)', description: 'p', size: 'sm',
     inputs: [], outputs: [{ name: 'prompt', kind: 'text' }], canStart: true, component: () => null,
   } as unknown as Parameters<typeof registerBlockDef>[0])
 })
@@ -94,8 +94,8 @@ beforeEach(() => {
   pipelineMocks.getUpstreamProducers.mockReturnValue([])
   // Each writer carries its own resolved prompt text, addressable by blockId.
   pipelineMocks.getUpstreamProducerValues.mockReturnValue([
-    { blockId: 'w1', blockIndex: 0, blockLabel: 'Prompt Writer (OpenRouter)', value: 'PROMPT FROM WRITER ONE' },
-    { blockId: 'w5', blockIndex: 4, blockLabel: 'I2V Prompt Writer (OpenRouter)', value: 'PROMPT FROM WRITER FIVE' },
+    { blockId: 'w1', blockIndex: 0, blockLabel: 'Prompt Writer (OpenAI-compatible)', value: 'PROMPT FROM WRITER ONE' },
+    { blockId: 'w5', blockIndex: 4, blockLabel: 'I2V Prompt Writer (OpenAI-compatible)', value: 'PROMPT FROM WRITER FIVE' },
   ])
   // The parse-workflow effect overwrites text_overrides from its response; echo
   // the segment nodes back so detection keeps both segments (otherwise the empty
@@ -120,7 +120,7 @@ describe('ComfyGen segment prompt source selection', () => {
     renderBlock()
 
     // Each segment shows a distinct "From X" label AND its own writer's text.
-    expect(await screen.findByText(/From 1\. Prompt Writer \(OpenRouter\)/)).toBeInTheDocument()
+    expect(await screen.findByText(/From 1\. Prompt Writer \(OpenAI-compatible\)/)).toBeInTheDocument()
     expect(screen.getByText(/From 5\. I2V Prompt Writer/)).toBeInTheDocument()
     expect(screen.getByText('PROMPT FROM WRITER ONE')).toBeInTheDocument()
     expect(screen.getByText('PROMPT FROM WRITER FIVE')).toBeInTheDocument()
@@ -135,7 +135,7 @@ describe('ComfyGen segment prompt source selection', () => {
 
     const fromLabels = await screen.findAllByText(/From 5\. I2V Prompt Writer/)
     expect(fromLabels.length).toBe(2)
-    expect(screen.queryByText(/From 1\. Prompt Writer \(OpenRouter\)/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/From 1\. Prompt Writer \(OpenAI-compatible\)/)).not.toBeInTheDocument()
   })
 
   test('selecting a writer for one segment does not change the other', async () => {
@@ -145,7 +145,7 @@ describe('ComfyGen segment prompt source selection', () => {
 
     renderBlock()
 
-    expect(await screen.findByText(/From 1\. Prompt Writer \(OpenRouter\)/)).toBeInTheDocument()
+    expect(await screen.findByText(/From 1\. Prompt Writer \(OpenAI-compatible\)/)).toBeInTheDocument()
     expect(screen.getByText(/From 5\. I2V Prompt Writer/)).toBeInTheDocument()
     // The shared block-level source must not be written anymore.
     expect(pipelineMocks.setBlockSource).not.toHaveBeenCalled()

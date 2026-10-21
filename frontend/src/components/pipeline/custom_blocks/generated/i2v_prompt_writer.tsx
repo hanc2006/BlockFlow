@@ -343,7 +343,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   return (
     <div className="space-y-3">
       {!hasApiKey && (
-        <ProviderMissingCard provider="OpenRouter" credentialLabel="OpenRouter API key" />
+        <ProviderMissingCard provider="OpenAI-compatible provider" credentialLabel="OpenAI-compatible API key" />
       )}
 
       <div className="space-y-1.5">
@@ -486,7 +486,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
 
 export const blockDef: BlockDef = {
   type: 'i2vPromptWriter',
-  label: 'I2V Prompt Writer (OpenRouter)',
+  label: 'I2V Prompt Writer (OpenAI-compatible)',
   description: 'Generate a video prompt from an image using a vision LLM',
   size: 'lg',
   canStart: true,

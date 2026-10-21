@@ -12,7 +12,7 @@ Source-available visual pipelines for AI image and video generation.
 
 BlockFlow's main path runs ComfyUI workflows through ComfyGen on your own
 RunPod serverless endpoint. Provider-specific blocks let you mix in models from
-RunPod, PiAPI, OpenRouter, CivitAI, and more.
+RunPod, PiAPI, OpenAI-compatible APIs, CivitAI, and more.
 
 ```bash
 npx @hearmeman24/blockflow
@@ -71,7 +71,7 @@ Some blocks call hosted models directly instead of going through ComfyUI:
 - **Nano Banana 2** on RunPod
 - **Seedance 2** through PiAPI
 - **GPT Image** through PiAPI
-- **Prompt and multimodal prompt writing** through OpenRouter
+- **Prompt and multimodal prompt writing** through a configurable OpenAI-compatible API
 - **CivitAI sharing** for publishing generated media
 
 You can mix these in one pipeline: generate a prompt, create or edit an image
@@ -130,6 +130,13 @@ On first use:
 
 BlockFlow runs locally and uses your own API keys, RunPod account, and storage.
 Generation costs are paid directly to the services you connect.
+
+Prompt-writing, multimodal, dataset-caption, and CivitAI auto-tag blocks use the
+OpenAI Chat Completions API shape. Configure the provider API key and base URL
+in **Settings → Credentials**. The default base URL is `https://api.openai.com/v1`;
+compatible endpoints that expose `/chat/completions` and `/models` can be used.
+Existing OpenRouter credentials and environment variables remain supported as
+legacy fallbacks.
 
 ## Common Workflows
 

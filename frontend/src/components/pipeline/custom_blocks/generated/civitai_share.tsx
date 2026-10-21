@@ -142,6 +142,7 @@ function CivitAIShareBlock({
 
   const [title, setTitle] = useSessionState(`block_${blockId}_title`, '')
   const [tags, setTags] = useSessionState(`block_${blockId}_tags`, 'wan2.2, ai video')
+  const [tagModel, setTagModel] = useSessionState(`block_${blockId}_tag_model`, 'gpt-4o-mini')
   const [manualResources, setManualResources] = useSessionState<ManualResource[]>(
     `block_${blockId}_manual_resources`,
     [],
@@ -598,6 +599,7 @@ function CivitAIShareBlock({
                       media_url: mediaUrls[0],
                       model: meta.model || '',
                       loras: meta.loras || [],
+                      tag_model: tagModel,
                     }),
                   })
                   const data = await res.json()
@@ -616,6 +618,16 @@ function CivitAIShareBlock({
           onChange={(e) => setTags(e.target.value)}
           placeholder="tag1, tag2, tag3"
           className="h-8 text-xs"
+        />
+      </div>
+
+      <div className="space-y-1">
+        <Label className="text-xs">Auto-tag model</Label>
+        <Input
+          value={tagModel}
+          onChange={(event) => setTagModel(event.target.value)}
+          placeholder="gpt-4o-mini"
+          className="h-8 text-xs font-mono"
         />
       </div>
 
@@ -719,7 +731,7 @@ export const blockDef: BlockDef = {
     { name: 'prompt', kind: PORT_TEXT, required: false },
   ],
   outputs: [],
-  configKeys: ['title', 'tags', 'manual_resources'],
+  configKeys: ['title', 'tags', 'tag_model', 'manual_resources'],
   component: CivitAIShareBlock,
 }
 

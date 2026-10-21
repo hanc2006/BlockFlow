@@ -396,6 +396,9 @@ def set_app_pref(name: str, value: str) -> None:
     with _lock:
         conn = _get_conn()
         try:
+            prior = conn.execute(
+                "SELECT value FROM settings_app_prefs WHERE name = ?", (name,)
+            ).fetchone()
             conn.execute(
                 """
                 INSERT INTO settings_app_prefs (name, value, updated_at)
@@ -404,6 +407,11 @@ def set_app_pref(name: str, value: str) -> None:
                 """,
                 (name, value, _now()),
             )
+            if name == "openai_base_url" and (prior is None or prior["value"] != value):
+                conn.execute(
+                    "DELETE FROM settings_credential_validations WHERE name = ?",
+                    ("openai_compatible",),
+                )
             conn.commit()
         finally:
             conn.close()

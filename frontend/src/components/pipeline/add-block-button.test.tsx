@@ -30,7 +30,7 @@ describe('AddBlockButton grouped picker', () => {
         validTypes={[
           block('elevenLabsTts', 'ElevenLabs v3 (TTS)', 'Text-to-speech via the ElevenLabs v3 model.'),
           block('videoLoader', 'Video Loader', 'Load a video file and pass it downstream.'),
-          block('promptWriter', 'Prompt Writer (OpenRouter)', 'Generate an image or video prompt using an LLM.'),
+          block('promptWriter', 'Prompt Writer (OpenAI-compatible)', 'Generate an image or video prompt using an LLM.'),
           block(
             'uploadImageToTmpfiles',
             'Upload Image',
@@ -72,7 +72,7 @@ describe('AddBlockButton grouped picker', () => {
         onAdd={vi.fn()}
         validTypes={[
           block('seedance', 'Seedance 2 (PiAPI)', 'ByteDance Seedance 2 via PiAPI.'),
-          block('promptWriter', 'Prompt Writer (OpenRouter)', 'Generate an image or video prompt using an LLM.'),
+          block('promptWriter', 'Prompt Writer (OpenAI-compatible)', 'Generate an image or video prompt using an LLM.'),
           block('videoLoader', 'Video Loader', 'Load a video file and pass it downstream.'),
         ]}
       />,
@@ -85,7 +85,7 @@ describe('AddBlockButton grouped picker', () => {
     expect(headings.map((heading) => heading.textContent)).toEqual(['Suggested'])
     expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
       'Video LoaderLoad a video file and pass it downstream.',
-      'Prompt Writer (OpenRouter)Generate an image or video prompt using an LLM.',
+      'Prompt Writer (OpenAI-compatible)Generate an image or video prompt using an LLM.',
       'Seedance 2 (PiAPI)ByteDance Seedance 2 via PiAPI.',
     ])
   })
@@ -97,7 +97,7 @@ describe('AddBlockButton grouped picker', () => {
         onAdd={vi.fn()}
         validTypes={[
           block('videoLoader', 'Video Loader', 'Load a video file and pass it downstream.'),
-          block('promptWriter', 'Prompt Writer (OpenRouter)', 'Generate an image or video prompt using an LLM.'),
+          block('promptWriter', 'Prompt Writer (OpenAI-compatible)', 'Generate an image or video prompt using an LLM.'),
         ]}
       />,
     )
@@ -107,7 +107,7 @@ describe('AddBlockButton grouped picker', () => {
 
     await user.type(within(menu).getByPlaceholderText('Search blocks...'), 'prompt')
 
-    expect(within(menu).getByText('Prompt Writer (OpenRouter)')).toBeInTheDocument()
+    expect(within(menu).getByText('Prompt Writer (OpenAI-compatible)')).toBeInTheDocument()
     expect(within(menu).queryByText('Video Loader')).not.toBeInTheDocument()
   })
 })

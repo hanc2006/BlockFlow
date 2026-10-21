@@ -336,7 +336,7 @@ function VideoLoaderBlock({
           )}
           {remoteEnabled && !remoteUrl && (
             <p className="text-[10px] text-muted-foreground">
-              Without a remote URL, downstream blocks that fetch from a remote server (PiAPI, OpenRouter)
+              Without a remote URL, downstream blocks that fetch from a remote server (PiAPI, OpenAI-compatible providers)
               can't reach this video — they need an externally-fetchable URL.
             </p>
           )}
