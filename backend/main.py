@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend import (
+    catalog_routes,
     comfygen_update_routes,
     config,
     db,
@@ -43,6 +44,7 @@ app.include_router(preset_routes.router)
 app.include_router(model_routes.router)
 app.include_router(lora_routes.router)
 app.include_router(comfygen_update_routes.router)
+app.include_router(catalog_routes.router)
 
 # sgs-ui-5ni: migrate user data out of ROOT_DIR on first launch. Must run
 # BEFORE init_db() — that opens run_history.db, which the migration moves.
