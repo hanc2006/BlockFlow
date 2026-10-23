@@ -202,6 +202,9 @@ IMAGE = {
         "steps": 20,
         "cfgScale": 3.5,
         "sampler": "Euler",
+        "scheduler": "simple",
+        "clipSkip": 2,
+        "Size": "832x1216",
         "Model": "flux1-dev",
         "resources": [
             {"type": "lora", "name": "cinelight", "weight": 0.8, "hash": "aa11"},
@@ -234,7 +237,8 @@ def test_search_images_requests_meta_and_extracts_prompts(mocker) -> None:
     assert img["media"] == "image"
     assert img["family"] == "Flux"
     assert img["settings"] == {"seed": 42, "steps": 20, "cfg_scale": 3.5,
-                               "sampler": "Euler", "model": "flux1-dev"}
+                               "sampler": "Euler", "scheduler": "simple", "clip_skip": 2,
+                               "width": 832, "height": 1216, "model": "flux1-dev"}
     assert img["loras"] == [
         {"name": "cinelight", "weight": 0.8, "hash": "aa11", "model_version_id": None},
         {"name": None, "weight": 0.7, "hash": None, "model_version_id": 9001},
@@ -254,3 +258,32 @@ def test_search_images_only_with_prompt_filters_locally(mocker) -> None:
 def test_video_image_media() -> None:
     img = civitai.normalize_image({"id": 1, "url": "u.mp4", "type": "video", "meta": {}})
     assert img["media"] == "video"
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        ("832x1216", {"width": 832, "height": 1216}),
+        ("1024 X 1024", {"width": 1024, "height": 1024}),
+        ("832 x 480", {"width": 832, "height": 480}),
+        ("832x", {}),
+        ("abcxdef", {}),
+        ("32x32", {}),          # below 64 px: not a real generation size
+        ("9000x512", {}),       # above 8192 px
+        (832, {}),              # not a string
+        ("", {}),
+    ],
+)
+def test_image_size_parsing(size, expected) -> None:
+    img = civitai.normalize_image({"id": 1, "url": "u", "meta": {"Size": size}})
+    assert {k: v for k, v in img["settings"].items() if k in ("width", "height")} == expected
+
+
+def test_image_lowercase_size_key_and_clip_skip_as_string() -> None:
+    img = civitai.normalize_image({"id": 1, "url": "u", "meta": {"size": "512x768", "clipSkip": "1"}})
+    assert img["settings"] == {"width": 512, "height": 768, "clip_skip": 1}
+
+
+def test_image_bad_clip_skip_is_dropped() -> None:
+    img = civitai.normalize_image({"id": 1, "url": "u", "meta": {"clipSkip": "two"}})
+    assert "clip_skip" not in img["settings"]

@@ -10,6 +10,7 @@ or re-synced later.
 | `vocab.py` (`CIVITAI_BASE_MODELS`) | [Zellione/comfyui-tiny-model-manager](https://github.com/Zellione/comfyui-tiny-model-manager) `frontend/src/app/utils/base-models.ts` | `4438fb5` | List copied. |
 | `civitai.py` (model search params) | [Zellione/comfyui-tiny-model-manager](https://github.com/Zellione/comfyui-tiny-model-manager) `py/services/providers/civitai_provider.py` | `4438fb5` | Adapted (curl_cffi, sync, BlockFlow item shape). |
 | `civitai.py` (gallery images, prompt/LoRA extraction) | [fabwaseem/ComfyUI-Civitai-Gallery-Explorer](https://github.com/fabwaseem/ComfyUI-Civitai-Gallery-Explorer) `Civitai_Gallery_Explorer.py` | `b1aa47d` | Logic re-implemented (`withMeta`, prompt keys, LoRA resource rule). |
+| `civitai.py` (`_size`: Size parsing and 64–8192 px bounds) | [cowneko/CWK_Checkpoints_Preset_Manager](https://github.com/cowneko/CWK_Checkpoints_Preset_Manager) `server.py` `_extract_best_image_metadata` | `57b249d` | Idea and bounds re-implemented (a few lines). |
 | `huggingface.py` | [Zellione/comfyui-tiny-model-manager](https://github.com/Zellione/comfyui-tiny-model-manager) `py/services/providers/huggingface_provider.py` | `4438fb5` | Adapted (curl_cffi, sync, no README rendering). |
 
 ## Licenses
@@ -46,6 +47,16 @@ SOFTWARE.
 MIT License
 
 Copyright (c) 2026 Zellione
+
+(Same MIT terms as above.)
+```
+
+### CWK_Checkpoints_Preset_Manager
+
+```
+MIT License
+
+Copyright (c) 2026 cowneko
 
 (Same MIT terms as above.)
 ```

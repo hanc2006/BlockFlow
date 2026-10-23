@@ -214,13 +214,42 @@ def _lora_refs(meta: dict) -> list[dict]:
     return out
 
 
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _size(meta: dict) -> tuple[int | None, int | None]:
+    """'832x1216' -> (832, 1216). Size bounds follow CWK_Checkpoints_Preset_Manager
+    (MIT, see THIRD_PARTY.md): anything outside 64..8192 px is treated as junk."""
+    raw = _first(meta, "Size", "size")
+    if not isinstance(raw, str):
+        return None, None
+    parts = raw.lower().split("x")
+    if len(parts) != 2:
+        return None, None
+    w, h = _int_or_none(parts[0].strip()), _int_or_none(parts[1].strip())
+    if w is None or h is None or not (64 <= w <= 8192 and 64 <= h <= 8192):
+        return None, None
+    return w, h
+
+
 def normalize_image(i: dict) -> dict:
     meta = i.get("meta") if isinstance(i.get("meta"), dict) else {}
+    width, height = _size(meta)
     settings = {
         "seed": meta.get("seed"),
         "steps": meta.get("steps"),
         "cfg_scale": meta.get("cfgScale"),
         "sampler": meta.get("sampler"),
+        # Names are as CivitAI reports them (often A1111-style, e.g.
+        # "DPM++ 2M Karras"); not yet translated to ComfyUI sampler names.
+        "scheduler": meta.get("scheduler"),
+        "clip_skip": _int_or_none(meta.get("clipSkip")),
+        "width": width,
+        "height": height,
         "model": _first(meta, "Model", "model"),
     }
     base = i.get("baseModel")
