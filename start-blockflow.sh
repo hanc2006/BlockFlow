@@ -16,6 +16,11 @@
 #   BLOCKFLOW_WAIT      Seconds to wait for the UI to answer (default: 600; the first
 #                       start installs Python and npm dependencies)
 #   BLOCKFLOW_LOG       Log file (default: $BLOCKFLOW_DATA_DIR/blockflow.log)
+#   BLOCKFLOW_USE_LOCAL_PRESETS
+#                       1: presets in local_presets/ replace registry presets with
+#                       the same id; only: local presets only (default: unset)
+#   BLOCKFLOW_LOCAL_PRESETS_DIR
+#                       Folder for local presets (default: <repo>/local_presets)
 #   UV_CACHE_DIR, UV_PYTHON_INSTALL_DIR
 #                       uv download cache / downloaded Pythons, kept on the volume
 #                       (default: /workspace/.uv-cache, /workspace/.uv-python)

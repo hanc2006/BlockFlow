@@ -30,6 +30,7 @@ Install flow (Stage B):
 from __future__ import annotations
 
 import json
+import os
 import re
 import signal
 import subprocess
@@ -40,6 +41,8 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from curl_cffi import requests as _cffi_requests
 from fastapi import APIRouter, HTTPException
@@ -123,7 +126,123 @@ def _cache_is_fresh() -> bool:
     return (time.time() - _cache["fetched_at"]) < _CACHE_TTL_SEC
 
 
+# === Local preset registry =================================================
+#
+# BLOCKFLOW_USE_LOCAL_PRESETS=1     local presets replace registry presets with
+#                                   the same id and add new ones
+# BLOCKFLOW_USE_LOCAL_PRESETS=only  local presets only, registry not contacted
+# BLOCKFLOW_LOCAL_PRESETS_DIR       folder with manifest.json (default:
+#                                   <repo>/local_presets)
+#
+# The folder uses the public registry's format. preset_url in manifest.json
+# and workflows[].url in a preset.json may be relative to the file that holds
+# them. Only files inside the folder are ever read.
+
+_LOCAL_TRUTHY = {"1", "true", "yes", "on"}
+
+
+class _LocalResponse:
+    """Response-shaped wrapper so local files flow through the same code as
+    registry HTTP responses."""
+
+    def __init__(self, body: Any) -> None:
+        self.status_code = 200
+        self._body = body
+
+    def json(self) -> Any:
+        return self._body
+
+
+def _local_presets_mode() -> str:
+    """'' (off), 'merge' or 'only'."""
+    raw = os.environ.get("BLOCKFLOW_USE_LOCAL_PRESETS", "").strip().lower()
+    if raw == "only":
+        return "only"
+    return "merge" if raw in _LOCAL_TRUTHY else ""
+
+
+def _local_presets_dir() -> Path:
+    configured = os.environ.get("BLOCKFLOW_LOCAL_PRESETS_DIR", "").strip()
+    return (Path(configured).expanduser() if configured else config.ROOT_DIR / "local_presets").resolve()
+
+
+def _resolve_local_ref(ref: str, base_dir: Path) -> str:
+    """A relative path -> file:// URL against base_dir; URLs are kept."""
+    if "://" in ref:
+        return ref
+    return (base_dir / ref).resolve().as_uri()
+
+
+def _load_local_manifest() -> tuple[list[dict], str | None]:
+    """(entries, error). Entries get absolute file:// preset_urls and local=True."""
+    root = _local_presets_dir()
+    path = root / "manifest.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ([], f"local presets enabled but {path} does not exist")
+    except (OSError, ValueError) as exc:
+        return ([], f"could not read {path}: {exc}")
+    entries: list[dict] = []
+    for entry in data.get("presets") or [] if isinstance(data, dict) else []:
+        if not isinstance(entry, dict) or not entry.get("id") or not entry.get("preset_url"):
+            continue
+        entries.append({**entry, "preset_url": _resolve_local_ref(str(entry["preset_url"]), root), "local": True})
+    return (entries, None)
+
+
+def _registry_get(url: str, timeout: float = _HTTP_TIMEOUT_SEC):
+    """GET a registry document: file:// from the local presets folder, else HTTP."""
+    if not url.startswith("file://"):
+        return _cffi_requests.get(url, timeout=timeout)
+    root = _local_presets_dir()
+    path = Path(url2pathname(urlparse(url).path)).resolve()
+    if not _local_presets_mode() or (path != root and root not in path.parents):
+        raise RuntimeError(f"refusing to read {url}: not inside the local presets folder")
+    body = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(body, dict) and isinstance(body.get("workflows"), list):
+        body["workflows"] = [
+            {**wf, "url": _resolve_local_ref(str(wf["url"]), path.parent)}
+            if isinstance(wf, dict) and wf.get("url") else wf
+            for wf in body["workflows"]
+        ]
+    return _LocalResponse(body)
+
+
 def _fetch_manifest() -> dict:
+    """Return the parsed manifest: the registry's, combined with the local
+    presets folder when BLOCKFLOW_USE_LOCAL_PRESETS is set. Raises when no
+    manifest can be produced."""
+    mode = _local_presets_mode()
+    if not mode:
+        return _fetch_registry_manifest()
+
+    local_entries, local_error = _load_local_manifest()
+    if mode == "only":
+        if local_error:
+            raise RuntimeError(local_error)
+        return {"manifest_version": 1, "presets": local_entries}
+
+    try:
+        remote = _fetch_registry_manifest()
+        registry_error = None
+    except Exception as exc:
+        if not local_entries:
+            raise
+        remote, registry_error = {"manifest_version": 1, "presets": []}, str(exc)
+    local_by_id = {e["id"]: e for e in local_entries}
+    remote_ids = {e.get("id") for e in remote.get("presets", [])}
+    presets = [local_by_id.get(e.get("id"), e) for e in remote.get("presets", [])]
+    presets += [e for e in local_entries if e["id"] not in remote_ids]
+    merged = {**remote, "presets": presets}
+    if local_error:
+        merged["local_presets_error"] = local_error
+    if registry_error:
+        merged["registry_error"] = registry_error
+    return merged
+
+
+def _fetch_registry_manifest() -> dict:
     """Hit the registry URL and return the parsed manifest. Raises on
     network failure or non-JSON response."""
     resp = _cffi_requests.get(_MANIFEST_URL, timeout=_HTTP_TIMEOUT_SEC)
@@ -383,7 +502,7 @@ def _get_or_fetch_manifest_cached() -> dict | None:
 
 
 def _fetch_preset_detail_remote(preset_url: str) -> dict:
-    resp = _cffi_requests.get(preset_url, timeout=_HTTP_TIMEOUT_SEC)
+    resp = _registry_get(preset_url, timeout=_HTTP_TIMEOUT_SEC)
     if resp.status_code >= 400:
         raise RuntimeError(f"detail fetch HTTP {resp.status_code}")
     return resp.json()
@@ -439,7 +558,7 @@ def get_preset_detail(preset_id: str) -> JSONResponse:
     if entry is None:
         raise HTTPException(status_code=404, detail=f"preset '{preset_id}' not in registry manifest")
     try:
-        resp = _cffi_requests.get(entry["preset_url"], timeout=_HTTP_TIMEOUT_SEC)
+        resp = _registry_get(entry["preset_url"], timeout=_HTTP_TIMEOUT_SEC)
         if resp.status_code >= 400:
             raise RuntimeError(f"registry returned HTTP {resp.status_code}")
         detail = resp.json()
@@ -1216,7 +1335,7 @@ def _fetch_workflows_for_preset(preset: dict) -> list[dict]:
             out.append(_attach_extras({"name": name, "json": {}}))
             continue
         try:
-            resp = _cffi_requests.get(url, timeout=_HTTP_TIMEOUT_SEC)
+            resp = _registry_get(url, timeout=_HTTP_TIMEOUT_SEC)
             body = resp.json() if resp.status_code < 400 else {}
         except Exception:
             body = {}
@@ -1479,7 +1598,7 @@ def _install_dedicated(preset_id: str, mode: str) -> JSONResponse:
     if entry is None:
         raise HTTPException(status_code=404, detail=f"preset '{preset_id}' not in registry manifest")
     try:
-        detail_resp = _cffi_requests.get(entry["preset_url"], timeout=_HTTP_TIMEOUT_SEC)
+        detail_resp = _registry_get(entry["preset_url"], timeout=_HTTP_TIMEOUT_SEC)
         if detail_resp.status_code >= 400:
             raise RuntimeError(f"registry returned HTTP {detail_resp.status_code}")
         preset = detail_resp.json()
@@ -1644,7 +1763,7 @@ def install_preset(body: InstallBody, mode: str = "cpu") -> JSONResponse:
     # for the ComfyGen block dropdown) and the version/disk_size fields
     # for the Settings row.
     try:
-        detail_resp = _cffi_requests.get(entry["preset_url"], timeout=_HTTP_TIMEOUT_SEC)
+        detail_resp = _registry_get(entry["preset_url"], timeout=_HTTP_TIMEOUT_SEC)
         if detail_resp.status_code >= 400:
             raise RuntimeError(f"registry returned HTTP {detail_resp.status_code}")
         preset = detail_resp.json()
@@ -1878,7 +1997,7 @@ def refresh_installed_presets() -> dict[str, Any]:
             continue
 
         try:
-            resp = _cffi_requests.get(preset_url, timeout=_HTTP_TIMEOUT_SEC)
+            resp = _registry_get(preset_url, timeout=_HTTP_TIMEOUT_SEC)
             if resp.status_code >= 400:
                 raise RuntimeError(f"HTTP {resp.status_code}")
             preset = resp.json()

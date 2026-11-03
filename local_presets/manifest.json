@@ -1,0 +1,24 @@
+{
+  "manifest_version": 1,
+  "presets": [
+    {
+      "id": "ltx-2-3",
+      "name": "LTX 2.3 22B \u2014 Distilled (FP8) (local: 2x upscaler 1.1)",
+      "description": "Lightricks LTX 2.3 22B in FP8 with the 384-rank distilled LoRA stacked on top. Ships two workflows: T2V (text-to-video) and I2V (image-to-video). Uses the Gemma 3 12B fp4_mixed text encoder + abliterated rank-64 LoRA for prompt understanding, plus the official 1.5x (I2V) and 2x (T2V) spatial upscalers. ~46 GB on the ComfyGen volume; recommended GPU tier.",
+      "comfygen_min_version": "0.2.0",
+      "tags": [
+        "t2v",
+        "i2v",
+        "video",
+        "ltx",
+        "ltx-2.3",
+        "lightricks",
+        "fp8",
+        "distilled"
+      ],
+      "disk_size_estimate_gb": 55,
+      "gpu_tier_hint": "recommended",
+      "preset_url": "ltx-2-3/preset.json"
+    }
+  ]
+}
