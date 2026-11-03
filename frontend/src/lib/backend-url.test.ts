@@ -36,3 +36,15 @@ describe('directBackendUrl', () => {
     expect(directBackendUrl('/api/x')).toBe('/api/x')
   })
 })
+
+describe('directBackendUrl port', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  test('uses NEXT_PUBLIC_BACKEND_PORT when FastAPI is not on 8000', () => {
+    vi.stubEnv('NEXT_PUBLIC_BACKEND_PORT', '9001')
+    openedAt('http://localhost:9000/generate')
+    expect(directBackendUrl('/api/x')).toBe('http://localhost:9001/api/x')
+  })
+})

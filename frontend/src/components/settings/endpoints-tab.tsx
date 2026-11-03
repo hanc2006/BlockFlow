@@ -253,7 +253,7 @@ function RemoteComfyGenDialog({
             type="url"
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
-            placeholder="https://gpu.example.com:8000"
+            placeholder="http://127.0.0.1:9010"
             autoComplete="url"
             spellCheck={false}
           />

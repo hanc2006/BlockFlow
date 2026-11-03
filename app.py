@@ -17,6 +17,10 @@ ROOT = Path(__file__).resolve().parent
 FRONTEND_DIR = ROOT / "frontend"
 BACKEND_PORT = int(os.environ.get("BACKEND_PORT", 8000))
 FRONTEND_PORT = int(os.environ.get("FRONTEND_PORT", 3000))
+# Address the web UI binds to. 127.0.0.1 keeps it local; 0.0.0.0 makes it
+# reachable from other machines (e.g. through a RunPod proxy URL). FastAPI
+# always stays on 127.0.0.1 and is reached through the UI's /api proxy.
+FRONTEND_HOST = os.environ.get("FRONTEND_HOST", "127.0.0.1")
 
 
 def _is_packaged_mode(argv: list[str] | None = None) -> bool:
@@ -57,11 +61,24 @@ def _backend_command(backend_port: int) -> list[str]:
     ]
 
 
-def _frontend_command(*, packaged: bool, frontend_port: int) -> tuple[list[str], Path]:
+def _frontend_command(
+    *, packaged: bool, frontend_port: int, frontend_host: str = "127.0.0.1",
+) -> tuple[list[str], Path]:
     if packaged:
+        # standalone server.js reads PORT / HOSTNAME from the environment
         server = _find_standalone_server()
         return ["node", str(server)], server.parent
-    return ["npm", "run", "dev", "--", "--port", str(frontend_port)], FRONTEND_DIR
+    return ["npm", "run", "dev", "--", "--port", str(frontend_port), "--hostname", frontend_host], FRONTEND_DIR
+
+
+def _frontend_env(*, backend_port: int, frontend_port: int, frontend_host: str) -> dict[str, str]:
+    return {
+        **os.environ,
+        "BACKEND_PORT": str(backend_port),  # Next.js /api rewrite target
+        "NEXT_PUBLIC_BACKEND_PORT": str(backend_port),  # browser direct calls (localhost only)
+        "PORT": str(frontend_port),
+        "HOSTNAME": frontend_host,
+    }
 
 
 def _stop_processes(procs: list[subprocess.Popen]) -> None:
@@ -105,13 +122,12 @@ def main() -> None:
         # Start Next.js frontend
         mode = "standalone" if packaged else "dev"
         print(f"[app] Starting Next.js {mode} on :{FRONTEND_PORT}...")
-        frontend_cmd, frontend_cwd = _frontend_command(packaged=packaged, frontend_port=FRONTEND_PORT)
-        frontend_env = {
-            **os.environ,
-            "BACKEND_PORT": str(BACKEND_PORT),
-            "PORT": str(FRONTEND_PORT),
-            "HOSTNAME": "127.0.0.1",
-        }
+        frontend_cmd, frontend_cwd = _frontend_command(
+            packaged=packaged, frontend_port=FRONTEND_PORT, frontend_host=FRONTEND_HOST,
+        )
+        frontend_env = _frontend_env(
+            backend_port=BACKEND_PORT, frontend_port=FRONTEND_PORT, frontend_host=FRONTEND_HOST,
+        )
         frontend = subprocess.Popen(
             frontend_cmd,
             cwd=str(frontend_cwd),

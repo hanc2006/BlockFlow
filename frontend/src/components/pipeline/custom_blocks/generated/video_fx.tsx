@@ -16,18 +16,13 @@ import {
   type BlockDef,
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
+import { directBackendUrl } from '@/lib/backend-url'
 
-// Bypass the Next.js dev-server proxy (undici has a ~5 min idle-socket
-// timeout that kills long RIFE jobs mid-flight). FastAPI is local and
-// CORS-open, so a direct call is fine here.
-const RUN_ENDPOINT =
-  typeof window !== 'undefined'
-    ? `http://${window.location.hostname}:8000/api/blocks/video_fx/run`
-    : '/api/blocks/video_fx/run'
-const UPLOAD_LUT_ENDPOINT =
-  typeof window !== 'undefined'
-    ? `http://${window.location.hostname}:8000/api/blocks/video_fx/upload-lut`
-    : '/api/blocks/video_fx/upload-lut'
+// Bypass the Next.js dev-server proxy when the UI runs locally (undici has a
+// ~5 min idle-socket timeout that kills long RIFE jobs mid-flight). Opened
+// remotely, directBackendUrl keeps the request on the page origin.
+const RUN_ENDPOINT = directBackendUrl('/api/blocks/video_fx/run')
+const UPLOAD_LUT_ENDPOINT = directBackendUrl('/api/blocks/video_fx/upload-lut')
 
 interface FxPayload {
   videos: string[]

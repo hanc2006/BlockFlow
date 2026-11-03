@@ -10,9 +10,9 @@
 #                       (default: /workspace/blockflow-data)
 #   PYTHON_LIBS         Persistent Python folder whose bin/ holds uv
 #                       (default: /workspace/.python; its bin/ is put first on PATH)
-#   FRONTEND_PORT       Web UI port to expose via RunPod (default: 3200)
-#   FRONTEND_HOST       Web UI bind address, if app.py supports it (default: 0.0.0.0)
-#   BACKEND_PORT        FastAPI port, stays on localhost (default: 8000)
+#   FRONTEND_PORT       Web UI port to expose via RunPod (default: 9000)
+#   FRONTEND_HOST       Web UI bind address (default: 0.0.0.0)
+#   BACKEND_PORT        FastAPI port, stays on localhost (default: 9001)
 #   BLOCKFLOW_WAIT      Seconds to wait for the UI to answer (default: 600; the first
 #                       start installs Python and npm dependencies)
 #   BLOCKFLOW_LOG       Log file (default: $BLOCKFLOW_DATA_DIR/blockflow.log)
@@ -37,9 +37,9 @@ case ":$PATH:" in
 esac
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/workspace/.uv-cache}"
 export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-/workspace/.uv-python}"
-export FRONTEND_PORT="${FRONTEND_PORT:-3200}"
+export FRONTEND_PORT="${FRONTEND_PORT:-9000}"
 export FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
-export BACKEND_PORT="${BACKEND_PORT:-8000}"
+export BACKEND_PORT="${BACKEND_PORT:-9001}"
 export BLOCKFLOW_NO_OPEN=1   # headless pod: do not try to open a browser
 export BLOCKFLOW_USE_LOCAL_PRESETS="${BLOCKFLOW_USE_LOCAL_PRESETS-1}"   # local preset fixes on by default
 BLOCKFLOW_WAIT="${BLOCKFLOW_WAIT:-600}"

@@ -61,8 +61,34 @@ def test_frontend_command_dev_uses_npm_dev():
 
     command, cwd = app._frontend_command(packaged=False, frontend_port=4123)
 
-    assert command == ["npm", "run", "dev", "--", "--port", "4123"]
+    assert command == ["npm", "run", "dev", "--", "--port", "4123", "--hostname", "127.0.0.1"]
     assert cwd == app.FRONTEND_DIR
+
+
+def test_frontend_command_dev_binds_requested_host():
+    app = _load_app_module()
+
+    command, _ = app._frontend_command(packaged=False, frontend_port=9000, frontend_host="0.0.0.0")
+
+    assert command[-4:] == ["--port", "9000", "--hostname", "0.0.0.0"]
+
+
+def test_frontend_host_defaults_to_loopback_and_reads_env(monkeypatch):
+    monkeypatch.delenv("FRONTEND_HOST", raising=False)
+    assert _load_app_module().FRONTEND_HOST == "127.0.0.1"
+    monkeypatch.setenv("FRONTEND_HOST", "0.0.0.0")
+    assert _load_app_module().FRONTEND_HOST == "0.0.0.0"
+
+
+def test_frontend_env_carries_ports_and_host():
+    app = _load_app_module()
+
+    env = app._frontend_env(backend_port=9001, frontend_port=9000, frontend_host="0.0.0.0")
+
+    assert env["PORT"] == "9000"
+    assert env["HOSTNAME"] == "0.0.0.0"  # standalone server.js bind address
+    assert env["BACKEND_PORT"] == "9001"  # Next.js /api rewrite target
+    assert env["NEXT_PUBLIC_BACKEND_PORT"] == "9001"  # browser-side direct calls (localhost only)
 
 
 def test_frontend_command_packaged_uses_standalone_server(monkeypatch, tmp_path):
