@@ -18,7 +18,8 @@
 #   BLOCKFLOW_LOG       Log file (default: $BLOCKFLOW_DATA_DIR/blockflow.log)
 #   BLOCKFLOW_USE_LOCAL_PRESETS
 #                       1: presets in local_presets/ replace registry presets with
-#                       the same id; only: local presets only (default: unset)
+#                       the same id; only: local presets only; empty: registry only
+#                       (default: 1)
 #   BLOCKFLOW_LOCAL_PRESETS_DIR
 #                       Folder for local presets (default: <repo>/local_presets)
 #   UV_CACHE_DIR, UV_PYTHON_INSTALL_DIR
@@ -40,6 +41,7 @@ export FRONTEND_PORT="${FRONTEND_PORT:-3200}"
 export FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 export BACKEND_PORT="${BACKEND_PORT:-8000}"
 export BLOCKFLOW_NO_OPEN=1   # headless pod: do not try to open a browser
+export BLOCKFLOW_USE_LOCAL_PRESETS="${BLOCKFLOW_USE_LOCAL_PRESETS-1}"   # local preset fixes on by default
 BLOCKFLOW_WAIT="${BLOCKFLOW_WAIT:-600}"
 
 mkdir -p "$BLOCKFLOW_DATA_DIR"
