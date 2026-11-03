@@ -18,7 +18,17 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from backend import comfy_gen_cli, comfygen_remote, config, db, media_meta, services, settings_store, state
+from backend import (
+    comfy_gen_cli,
+    comfygen_pod_models,
+    comfygen_remote,
+    config,
+    db,
+    media_meta,
+    services,
+    settings_store,
+    state,
+)
 
 router = APIRouter()
 
@@ -295,12 +305,62 @@ def _run_download(cmd: list[str]) -> None:
         _download_state["running"] = False
 
 
+def _start_pod_model_download(models: list[dict[str, Any]]) -> JSONResponse:
+    """Download missing models onto the attached pod (call with _download_lock held)."""
+    if not models:
+        return JSONResponse({"ok": False, "error": "No models to download"})
+    specs: list[dict[str, str]] = []
+    for m in models:
+        url = str(m.get("download_url") or "")
+        if not url:
+            continue
+        save_path = m.get("save_path", "default")
+        folder = save_path if save_path and save_path != "default" else "checkpoints"
+        filename = str(m.get("filename") or "") or url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        specs.append({"url": url, "dest": f"{folder}/{filename}"})
+    if not specs:
+        return JSONResponse({"ok": False, "error": "No downloadable models (missing URLs)"})
+
+    _download_state["running"] = True
+    _download_state["done"] = False
+    _download_state["error"] = ""
+    _download_state["status"] = f"Starting download of {len(specs)} model(s) on the pod..."
+    _download_state["total"] = len(specs)
+
+    def _progress(status: dict[str, Any]) -> None:
+        files = status.get("files") or []
+        done = sum(1 for f in files if f.get("status") == "done")
+        _download_state["status"] = (
+            f"Downloading on the pod: {done}/{len(specs)} file(s), "
+            f"{comfygen_pod_models.percent_done(status)}%"
+        )
+
+    def _run() -> None:
+        try:
+            ok, result = comfygen_pod_models.download(specs, on_progress=_progress)
+            if ok:
+                _download_state["status"] = f"Downloaded {len(specs)} model(s)"
+            else:
+                _download_state["error"] = str(result)
+        except Exception as e:
+            _download_state["error"] = str(e)
+        finally:
+            _download_state["done"] = True
+            _download_state["running"] = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return JSONResponse({"ok": True, "started": True, "count": len(specs)})
+
+
 @router.post("/download-models")
 def download_models(payload: dict[str, Any] = {}) -> JSONResponse:
     """Start comfy-gen download --batch in background."""
     with _download_lock:
         if _download_state["running"]:
             return JSONResponse({"ok": True, "already_running": True})
+
+        if comfygen_pod_models.is_dedicated():
+            return _start_pod_model_download(payload.get("models", []))
 
         try:
             comfy_gen = comfy_gen_cli.resolve_comfy_gen()
@@ -2932,8 +2992,14 @@ async def run(request: Request) -> JSONResponse:
         state.JOBS[job_id] = record
         state._persist_jobs_locked()
 
-    state.EXECUTOR.submit(_run_comfy_job, job_id, tmp.name, file_inputs, overrides,
-                          endpoint_id, source, batch_id)
+    if settings_store.get_comfygen_runtime().get("runtime_kind") == "dedicated":
+        # Attached persistent ComfyGen server: its compatibility API runs the
+        # job (no serverless endpoint / comfy-gen CLI involved).
+        state.EXECUTOR.submit(_run_dedicated_comfy_job, job_id, tmp.name, file_inputs, overrides,
+                              source, batch_id)
+    else:
+        state.EXECUTOR.submit(_run_comfy_job, job_id, tmp.name, file_inputs, overrides,
+                              endpoint_id, source, batch_id)
 
     if source == "mcp":
         _publish_event({"type": "mcp", "job_id": job_id, "batch_id": batch_id, "phase": "start"})

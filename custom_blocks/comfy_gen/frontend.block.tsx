@@ -26,6 +26,7 @@ import { pickFiles } from '@/lib/file-picker'
 import { pollJobUntilTerminal, type JobLike } from '@/lib/comfy-poll'
 import type { Job } from '@/lib/types'
 import {
+  getComfyGenRuntime,
   getEndpoint,
   getInstalledPreset,
   listInstalledPresets,
@@ -547,8 +548,19 @@ function ComfyGenBlock({
       .finally(() => setSettingsEndpointLoaded(true))
   }, [])
 
+  // An attached persistent ComfyGen server runs jobs without a serverless
+  // endpoint (the backend dispatches /run to it), so it counts as configured.
+  const [dedicatedServerUrl, setDedicatedServerUrl] = useState<string | null>(null)
+  const [runtimeLoaded, setRuntimeLoaded] = useState(false)
+  useEffect(() => {
+    getComfyGenRuntime()
+      .then((rt) => setDedicatedServerUrl(rt.runtime_kind === 'dedicated' ? (rt.base_url ?? '') : null))
+      .catch(() => setDedicatedServerUrl(null))
+      .finally(() => setRuntimeLoaded(true))
+  }, [])
+
   const endpointId = endpointIdOverride.trim() || settingsEndpointId || ''
-  const endpointMissing = settingsEndpointLoaded && !endpointId
+  const endpointMissing = settingsEndpointLoaded && runtimeLoaded && dedicatedServerUrl === null && !endpointId
 
   const persistEndpoint = useCallback((v: string) => {
     setEndpointIdOverride(v)
@@ -2260,7 +2272,9 @@ function ComfyGenBlock({
           ) : (
             <>
               <span className="font-mono text-foreground truncate max-w-[180px]">
-                {endpointId || '(none)'}
+                {dedicatedServerUrl !== null
+                  ? `persistent server ${dedicatedServerUrl}`
+                  : endpointId || '(none)'}
               </span>
               <span className="text-muted-foreground/70">
                 · {endpointIdOverride.trim() ? 'override' : 'from Settings'}

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 
 const settingsMocks = vi.hoisted(() => ({
   getEndpoint: vi.fn(),
+  getComfyGenRuntime: vi.fn(),
   listInstalledPresets: vi.fn(),
   getInstalledPreset: vi.fn(),
 }))
@@ -21,6 +22,7 @@ vi.mock('@/lib/settings/client', async (importOriginal) => {
   return {
     ...actual,
     getEndpoint: settingsMocks.getEndpoint,
+    getComfyGenRuntime: settingsMocks.getComfyGenRuntime,
     listInstalledPresets: settingsMocks.listInstalledPresets,
     getInstalledPreset: settingsMocks.getInstalledPreset,
   }
@@ -94,6 +96,7 @@ beforeEach(() => {
   pipelineMocks.pipeline.blocks = []
   pipelineMocks.getUpstreamProducers.mockReturnValue([])
   settingsMocks.getEndpoint.mockResolvedValue(null)
+  settingsMocks.getComfyGenRuntime.mockResolvedValue({ runtime_kind: 'serverless', base_url: null, has_token: false })
   settingsMocks.listInstalledPresets.mockResolvedValue([
     {
       preset_id: 'preset-a',
@@ -216,6 +219,25 @@ describe('ComfyGen preset refresh state', () => {
 
     expect(openWizard).toHaveBeenCalledTimes(1)
     window.removeEventListener('blockflow:open-comfygen-wizard', openWizard)
+  })
+
+  test('attached persistent server counts as configured: no endpoint warning', async () => {
+    settingsMocks.getComfyGenRuntime.mockResolvedValue({
+      runtime_kind: 'dedicated', base_url: 'http://127.0.0.1:8787', has_token: true,
+    })
+    renderBlock()
+
+    await waitFor(() => expect(settingsMocks.getComfyGenRuntime).toHaveBeenCalled())
+    await waitFor(() => expect(settingsMocks.getEndpoint).toHaveBeenCalled())
+    // let both settings requests resolve, then the warning must still be absent
+    await new Promise((r) => setTimeout(r, 0))
+    expect(screen.queryByText(/ComfyGen endpoint is not set up/i)).not.toBeInTheDocument()
+  })
+
+  test('runtime lookup failure falls back to the endpoint check', async () => {
+    settingsMocks.getComfyGenRuntime.mockRejectedValue(new Error('offline'))
+    renderBlock()
+    expect(await screen.findByText(/ComfyGen endpoint is not set up/i)).toBeInTheDocument()
   })
 
   test('empty presets explain advanced workflow loading and reveal loaders', async () => {
