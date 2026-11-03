@@ -176,3 +176,51 @@ describe('pollJobUntilTerminal (sgs-ui-dgj)', () => {
     expect(calls).toEqual([5000])
   })
 })
+
+describe('pollJobUntilTerminal: transient status-fetch failures', () => {
+  // A proxy in front of BlockFlow (e.g. RunPod's) sometimes answers one poll
+  // with an HTML error page; res.json() then throws "Unexpected token '<'".
+  // The job is still running on the server, so one bad poll must not fail it.
+  test('retries after fetch errors and still returns the completed job', async () => {
+    const { sleep } = makeFakeSleep()
+    const fetchStatus = vi.fn()
+      .mockResolvedValueOnce(inProgress(10))
+      .mockRejectedValueOnce(new SyntaxError("Unexpected token '<', \"<html>\n<h\"... is not valid JSON"))
+      .mockRejectedValueOnce(new Error('HTTP 502'))
+      .mockResolvedValueOnce(completed())
+    const job = await pollJobUntilTerminal('job-1', { fetchStatus, sleep })
+    expect(job.status).toBe('COMPLETED')
+    expect(fetchStatus).toHaveBeenCalledTimes(4)
+  })
+
+  test('gives up after maxConsecutiveErrors failures in a row', async () => {
+    const { sleep } = makeFakeSleep()
+    const fetchStatus = vi.fn().mockRejectedValue(new Error('HTTP 502'))
+    await expect(
+      pollJobUntilTerminal('job-1', { fetchStatus, sleep, maxConsecutiveErrors: 3 }),
+    ).rejects.toThrow(/HTTP 502/)
+    expect(fetchStatus).toHaveBeenCalledTimes(3)
+  })
+
+  test('a successful poll resets the error count', async () => {
+    const { sleep } = makeFakeSleep()
+    const fetchStatus = vi.fn()
+      .mockRejectedValueOnce(new Error('HTTP 502'))
+      .mockRejectedValueOnce(new Error('HTTP 502'))
+      .mockResolvedValueOnce(inProgress(20))
+      .mockRejectedValueOnce(new Error('HTTP 502'))
+      .mockRejectedValueOnce(new Error('HTTP 502'))
+      .mockResolvedValueOnce(completed())
+    const job = await pollJobUntilTerminal('job-1', { fetchStatus, sleep, maxConsecutiveErrors: 3 })
+    expect(job.status).toBe('COMPLETED')
+  })
+
+  test('abort during a failure streak still throws AbortError', async () => {
+    const { sleep } = makeFakeSleep()
+    const ctrl = new AbortController()
+    const fetchStatus = vi.fn(async () => { ctrl.abort(); throw new Error('HTTP 502') })
+    await expect(
+      pollJobUntilTerminal('job-1', { fetchStatus, sleep, signal: ctrl.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+  })
+})

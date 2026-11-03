@@ -1500,6 +1500,7 @@ function ComfyGenBlock({
         signal,
         fetchStatus: async (id) => {
           const res = await fetch(`${STATUS_ENDPOINT}/${encodeURIComponent(id)}`)
+          if (!res.ok) throw new Error(`job status: HTTP ${res.status}`)
           const data = await res.json()
           return (data.job as JobLike | undefined) ?? null
         },

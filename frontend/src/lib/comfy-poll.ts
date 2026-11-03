@@ -53,6 +53,9 @@ export type PollDeps = {
   intervalMs?: number
   /** Optional AbortSignal — when aborted, throws DOMException('Aborted'). */
   signal?: AbortSignal
+  /** fetchStatus failures in a row (network error, proxy error page, bad
+   *  JSON) tolerated before giving up; defaults to 40 (~2 min at 3 s). */
+  maxConsecutiveErrors?: number
 }
 
 const TERMINAL_OK = new Set(['COMPLETED', 'COMPLETED_WITH_WARNING'])
@@ -68,18 +71,35 @@ const TERMINAL_FAIL = new Set(['FAILED', 'CANCELLED', 'TIMED_OUT'])
  *   - `DOMException('Aborted', 'AbortError')` when `signal` aborts.
  *   - `Error(message)` when status flips to FAILED / CANCELLED / TIMED_OUT.
  *     The message prefers `job.error` over a generic `Job <STATUS>` form.
+ *   - the last fetchStatus error after `maxConsecutiveErrors` failures in a
+ *     row. A single failed poll (e.g. a reverse proxy answering with an HTML
+ *     error page) is retried: the job keeps running on the server.
  */
 export async function pollJobUntilTerminal(
   jobId: string,
   deps: PollDeps,
 ): Promise<JobLike> {
   const interval = deps.intervalMs ?? 3000
+  const maxErrors = Math.max(1, deps.maxConsecutiveErrors ?? 40)
+  let errors = 0
 
   while (true) {
     if (deps.signal?.aborted) {
       throw new DOMException('Aborted', 'AbortError')
     }
-    const job = await deps.fetchStatus(jobId)
+    let job: JobLike | null
+    try {
+      job = await deps.fetchStatus(jobId)
+      errors = 0
+    } catch (err) {
+      if (deps.signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError')
+      }
+      errors += 1
+      if (errors >= maxErrors) throw err
+      await deps.sleep(interval)
+      continue
+    }
     if (!job) {
       await deps.sleep(interval)
       continue
