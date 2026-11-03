@@ -60,8 +60,80 @@ stop_running() {
   rm -f "$PID_FILE"
 }
 
+# `ss`/`lsof` are often missing on pod images, so read /proc directly.
+# Prints "pid<TAB>pgid<TAB>cwd<TAB>cmdline" for each process listening on TCP port $1.
+port_owners() {
+  python3 - "$1" <<'PY'
+import glob, os, sys
+port = int(sys.argv[1])
+inodes = set()
+for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    try:
+        lines = open(table).read().splitlines()[1:]
+    except OSError:
+        continue
+    for line in lines:
+        f = line.split()
+        if len(f) > 9 and f[3] == "0A" and int(f[1].rsplit(":", 1)[1], 16) == port:
+            inodes.add(f[9])
+for fd in glob.glob("/proc/[0-9]*/fd/*"):
+    try:
+        link = os.readlink(fd)
+    except OSError:
+        continue
+    if link.startswith("socket:[") and link[8:-1] in inodes:
+        pid = fd.split("/")[2]
+        inodes.discard(link[8:-1])
+        try:
+            stat = open(f"/proc/{pid}/stat").read()
+            pgid = stat.rsplit(")", 1)[1].split()[2]
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+            cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace").strip()
+        except (OSError, IndexError):
+            pgid, cwd, cmd = "?", "?", "?"
+        print(f"{pid}\t{pgid}\t{cwd}\t{cmd}")
+PY
+}
+
+# Free FRONTEND_PORT / BACKEND_PORT. Leftover BlockFlow processes (started by
+# hand or by an older script, so not in the PID file) are recognised by their
+# working directory inside this repo and stopped with their process group;
+# any other program is left alone and we refuse to start.
+free_ports() {
+  local port opid opgid ocwd ocmd
+  for port in "$FRONTEND_PORT" "$BACKEND_PORT"; do
+    while IFS=$'\t' read -r opid opgid ocwd ocmd; do
+      [ -n "$opid" ] || continue
+      if [[ "$ocwd" == "$REPO_DIR"* ]]; then
+        echo "==> Stopping a BlockFlow process not started by this script (port ${port}, pid ${opid}: ${ocmd})"
+        if [[ "$opgid" =~ ^[0-9]+$ ]] && [ "$opgid" != "$(ps -o pgid= $$ | tr -d ' ')" ]; then
+          kill -TERM -- "-$opgid" 2>/dev/null || true
+        fi
+        kill -TERM "$opid" 2>/dev/null || true
+      else
+        echo "ERROR: port ${port} is used by another program (pid ${opid}: ${ocmd})." >&2
+        echo "       Stop it or choose other ports with FRONTEND_PORT=... / BACKEND_PORT=..." >&2
+        exit 1
+      fi
+    done < <(port_owners "$port")
+  done
+  for _ in $(seq 1 15); do
+    [ -z "$(port_owners "$FRONTEND_PORT")$(port_owners "$BACKEND_PORT")" ] && return 0
+    sleep 1
+  done
+  for port in "$FRONTEND_PORT" "$BACKEND_PORT"; do
+    port_owners "$port" | cut -f1 | xargs -r kill -9 2>/dev/null || true
+  done
+  sleep 1
+  if [ -n "$(port_owners "$FRONTEND_PORT")$(port_owners "$BACKEND_PORT")" ]; then
+    echo "ERROR: ports ${FRONTEND_PORT}/${BACKEND_PORT} are still in use." >&2
+    exit 1
+  fi
+}
+
 if [ "${1:-}" = "stop" ]; then
   stop_running
+  free_ports
   exit 0
 fi
 if [ -n "${1:-}" ]; then
@@ -79,6 +151,7 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 stop_running
+free_ports
 
 echo "==> Data: ${BLOCKFLOW_DATA_DIR}"
 echo "==> uv: $(command -v uv)"
@@ -90,7 +163,13 @@ pid="$(cat "$PID_FILE")"
 
 echo -n "==> Waiting for the web UI on port ${FRONTEND_PORT}"
 deadline=$((SECONDS + BLOCKFLOW_WAIT))
-until curl -fsS -o /dev/null "http://127.0.0.1:${FRONTEND_PORT}" 2>/dev/null; do
+# Ready only when the UI answers AND the port belongs to the BlockFlow we just
+# started (its process group), not to something else.
+ui_is_ours() {
+  [ "$(port_owners "$FRONTEND_PORT" | cut -f2 | head -1)" = "$pid" ] \
+    && curl -fsS -o /dev/null "http://127.0.0.1:${FRONTEND_PORT}" 2>/dev/null
+}
+until ui_is_ours; do
   if ! kill -0 "$pid" 2>/dev/null; then
     echo
     echo "ERROR: BlockFlow exited during startup. Last log lines:" >&2
