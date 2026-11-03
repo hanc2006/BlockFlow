@@ -94,6 +94,21 @@ describe('computeMilestones (GPU mode)', () => {
   })
 })
 
+describe('computeMilestones (dedicated server mode)', () => {
+  test('pod-server installs skip the installer-pod milestones and show download bytes', () => {
+    const ms = computeMilestones(progress({
+      install_mode: 'dedicated',
+      phase: 'download',
+      files_total: 2,
+      total_download_bytes: 2 * 1024 ** 3,
+      bytes_done: 1024 ** 3,
+    }))
+    expect(ms.map((m) => m.key)).toEqual(['download', 'finalize'])
+    expect(ms[0].status).toBe('active')
+    expect(ms[0].detail).toBe('1.0 GB / 2.0 GB')
+  })
+})
+
 describe('<InstallMilestones> rendering', () => {
   test('renders milestone list with correct active milestone', () => {
     render(<InstallMilestones progress={progress({ phase: 'preflight' })} />)

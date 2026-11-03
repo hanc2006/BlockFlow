@@ -1207,7 +1207,7 @@ function PresetOnboardingView({
   const [installing, setInstalling] = useState(false)
   const [progress, setProgress] = useState<InstallProgress | null>(null)
   const [fallbackPrompt, setFallbackPrompt] = useState(false)
-  const [requestedInstallMode, setRequestedInstallMode] = useState<'cpu' | 'gpu'>('cpu')
+  const [requestedInstallMode, setRequestedInstallMode] = useState<'cpu' | 'gpu' | 'dedicated'>('cpu')
 
   // Pick the quickstart preset on mount.
   useEffect(() => {
@@ -1379,9 +1379,11 @@ function PresetOnboardingView({
       <div className="space-y-3">
         <div className="text-sm font-medium">Installing {preset.name}…</div>
         <p className="text-xs text-muted-foreground">
-          {mode === 'gpu'
-            ? 'Downloading via your ComfyGen GPU endpoint.'
-            : 'Downloading via a CPU installer pod (~$0.06/hr).'}
+          {mode === 'dedicated'
+            ? 'Downloading onto your persistent ComfyGen server.'
+            : mode === 'gpu'
+              ? 'Downloading via your ComfyGen GPU endpoint.'
+              : 'Downloading via a CPU installer pod (~$0.06/hr).'}
         </p>
         <div className="text-xs font-mono">
           state: {progress?.state ?? 'starting'} · files: {filesDone}/{filesTotal}

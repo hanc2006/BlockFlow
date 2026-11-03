@@ -46,9 +46,18 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from backend import comfy_gen_cli, config, preset_resolver, runpod_api, settings_store
+from backend import comfy_gen_cli, comfygen_remote, config, preset_resolver, runpod_api, settings_store
 
 router = APIRouter()
+
+# Dedicated runtime (an attached persistent ComfyGen server): presets are
+# installed by the pod server's /models/* routes instead of a RunPod installer
+# pod writing to a serverless network volume.
+_DEDICATED_POLL_SEC = 2.0
+# Consecutive failed progress polls tolerated before the install is failed.
+_DEDICATED_MAX_POLL_ERRORS = 15
+# Download job id on the pod for the install in flight (cancel needs it).
+_dedicated_install: dict[str, str | None] = {"download_id": None}
 
 # Where to fetch the canonical manifest from.
 _MANIFEST_URL = (
@@ -291,6 +300,7 @@ def _reset_install_state() -> None:
     })
     _install_proc["proc"] = None
     _volume_cache.clear()
+    _dedicated_install["download_id"] = None
 
 
 def _schedule_delayed_pod_delete(
@@ -434,7 +444,23 @@ def _compute_disk_budget() -> dict[str, Any]:
     """Best-effort: ask RunPod for the ComfyGen volume's total size and
     subtract sum of installed-preset disk_size_gb to estimate free space.
     Not exact (the user may have downloaded models out of band), but a
-    sane safety net for the install pre-check."""
+    sane safety net for the install pre-check.
+
+    With a persistent ComfyGen server attached, the pod reports the real
+    total and free space of its models folder instead."""
+    if _dedicated_runtime():
+        used_est_gb = sum(
+            (p.get("disk_size_gb") or 0) for p in settings_store.list_installed_presets()
+        )
+        try:
+            base_url, token = _dedicated_server()
+            disk = comfygen_remote.request_json(base_url, token, "GET", "/models/disk", timeout=15)
+            total_gb = round(int(disk["total_bytes"]) / 1024 ** 3)
+            free_gb = round(int(disk["free_bytes"]) / 1024 ** 3)
+        except Exception:
+            return {"total_gb": None, "used_estimate_gb": used_est_gb, "free_estimate_gb": None}
+        return {"total_gb": total_gb, "used_estimate_gb": total_gb - free_gb, "free_estimate_gb": free_gb}
+
     api_key = settings_store.get_credential("runpod_api_key") or ""
     ep = settings_store.get_endpoint("comfygen") or {}
     volume_id = ep.get("volume_id")
@@ -1301,6 +1327,286 @@ def _require_credentials_for_preset(preset: dict) -> None:
         )
 
 
+# === Dedicated runtime (persistent ComfyGen server) =========================
+
+def _dedicated_runtime() -> bool:
+    return settings_store.get_comfygen_runtime().get("runtime_kind") == "dedicated"
+
+
+def _dedicated_server() -> tuple[str, str]:
+    """(base_url, token) of the attached server; 400 if either is missing."""
+    base_url = str(settings_store.get_comfygen_runtime().get("base_url") or "")
+    token = (settings_store.get_credential("comfygen_remote_token") or "").strip()
+    if not base_url or not token:
+        raise HTTPException(
+            status_code=400,
+            detail="Dedicated ComfyGen server URL and bearer token are required",
+        )
+    return base_url, token
+
+
+def _pod_model_path(dest: str) -> str:
+    """Preset dest → path relative to the pod's models folder. A dest
+    without a folder goes to checkpoints/, as in the serverless flow."""
+    dest = (dest or "").strip()
+    return dest if "/" in dest else f"checkpoints/{dest}"
+
+
+def _format_speed(bytes_per_sec: float | int | None) -> str | None:
+    if not bytes_per_sec or bytes_per_sec <= 0:
+        return None
+    mb = bytes_per_sec / 1024 ** 2
+    return f"{mb:.1f} MB/s" if mb >= 1 else f"{bytes_per_sec / 1024:.0f} KB/s"
+
+
+def _apply_pod_download_status(st: dict[str, Any]) -> None:
+    """Map a pod /models/download/<id> status onto _install_state's UI fields."""
+    files: list[dict[str, Any]] = []
+    bytes_done = bytes_total = files_done = cached = 0
+    for f in st.get("files") or []:
+        status = f.get("status")
+        done = int(f.get("bytes_done") or 0)
+        total = int(f.get("bytes_total") or 0)
+        if status == "done":
+            ui_status, percent = "done", 100.0
+            files_done += 1
+            bytes_done += total or done
+        elif status in ("downloading", "verifying"):
+            ui_status = "downloading"
+            percent = round(done * 100 / total, 1) if total else 0.0
+            if status == "downloading":  # verifying = hashing an existing file
+                bytes_done += done
+        else:
+            ui_status, percent = "pending", 0.0
+        bytes_total += total
+        cached += 1 if f.get("cached") else 0
+        files.append({
+            "index": int(f.get("index", len(files))),
+            "path": f.get("dest"),
+            "status": ui_status,
+            "percent": percent,
+            "speed": _format_speed(f.get("speed_bps")) if status == "downloading" else None,
+            "cached": bool(f.get("cached")),
+            "bytes": total or None,
+            "sha256": None,
+        })
+    _install_state.update({
+        "files": files,
+        "files_total": len(files) or _install_state["files_total"],
+        "files_done": files_done,
+        "bytes_done": bytes_done,
+        "total_download_bytes": bytes_total,
+        "cached_count": cached,
+        "missing_count": len(files) - cached,
+    })
+
+
+def _run_dedicated_install(
+    *,
+    base_url: str,
+    token: str,
+    download_id: str,
+    preset_id: str,
+    version: str,
+    disk_size_gb: int,
+    workflow_json_str: str,
+    installed_paths: list[str],
+) -> None:
+    """Poll the pod's download job until it ends, then record the preset."""
+    _install_state["state"] = "running"
+    errors = 0
+    while True:
+        try:
+            st = comfygen_remote.request_json(
+                base_url, token, "GET", f"/models/download/{download_id}", timeout=30,
+            )
+            errors = 0
+        except Exception as exc:
+            errors += 1
+            if errors >= _DEDICATED_MAX_POLL_ERRORS:
+                _install_state.update({
+                    "state": "error", "completed_at": _now_iso(), "error_kind": "unknown",
+                    "error": f"Lost contact with the pod while installing: {exc}",
+                })
+                _dedicated_install["download_id"] = None
+                return
+            time.sleep(_DEDICATED_POLL_SEC)
+            continue
+
+        _apply_pod_download_status(st)
+        status = st.get("status")
+        if status == "completed":
+            _install_state["phase"] = "finalize"
+            settings_store.record_installed_preset(
+                preset_id=preset_id,
+                version=version,
+                disk_size_gb=disk_size_gb,
+                workflow_json=workflow_json_str,
+                installed_paths=installed_paths,
+                pod_id=None,
+                install_mode="dedicated",
+                cost_per_hr_at_spawn=None,
+            )
+            _install_state.update({"state": "completed", "phase": "done", "completed_at": _now_iso()})
+            break
+        if status == "cancelled":
+            _install_state.update({
+                "state": "cancelled", "completed_at": _now_iso(),
+                "error": "install cancelled by user",
+            })
+            break
+        if status == "failed":
+            _install_state.update({
+                "state": "error", "completed_at": _now_iso(), "error_kind": "unknown",
+                "error": str(st.get("message") or "download failed on the pod"),
+            })
+            break
+        time.sleep(_DEDICATED_POLL_SEC)
+    _dedicated_install["download_id"] = None
+
+
+def _install_dedicated(preset_id: str, mode: str) -> JSONResponse:
+    """Install a preset onto the attached pod via its /models/download route."""
+    if mode != "cpu":
+        raise HTTPException(
+            status_code=400,
+            detail="GPU-endpoint install is not available with a persistent ComfyGen server",
+        )
+    base_url, token = _dedicated_server()
+
+    entry = _find_manifest_entry(preset_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"preset '{preset_id}' not in registry manifest")
+    try:
+        detail_resp = _cffi_requests.get(entry["preset_url"], timeout=_HTTP_TIMEOUT_SEC)
+        if detail_resp.status_code >= 400:
+            raise RuntimeError(f"registry returned HTTP {detail_resp.status_code}")
+        preset = detail_resp.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"could not fetch preset detail: {exc}") from exc
+    _require_credentials_for_preset(preset)
+
+    models: list[dict[str, Any]] = []
+    for m in preset.get("models", []) or []:
+        spec: dict[str, Any] = {"url": m.get("url") or "", "dest": _pod_model_path(m.get("dest") or "")}
+        if m.get("sha256"):
+            spec["sha256"] = m["sha256"]
+        if m.get("size_gb"):
+            spec["size_gb"] = m["size_gb"]
+        models.append(spec)
+    if not models:
+        raise HTTPException(status_code=400, detail=f"preset '{preset_id}' lists no model files")
+    installed_paths = list(dict.fromkeys(m["dest"] for m in models))
+
+    with _install_lock:
+        if _install_state["state"] in ("queued", "running", "cancelling"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"another install is in progress: {_install_state['preset_id']}",
+            )
+        _install_state.update({
+            "state": "queued",
+            "preset_id": preset_id,
+            "started_at": _now_iso(),
+            "completed_at": None,
+            "files_total": len(models),
+            "files_done": 0,
+            "error": None,
+            "error_kind": None,
+            "install_mode": "dedicated",
+            "log_tail": "",
+            "cached_count": 0,
+            "missing_count": 0,
+            "stale_count": 0,
+            "total_download_bytes": 0,
+            "bytes_done": 0,
+            "files": [],
+            "pod_id": None,
+            "pod_delete_at": None,
+            "phase": "download",
+        })
+
+    try:
+        workflows = _fetch_workflows_for_preset(preset)
+        stored_blob = {"workflows": workflows, "recommendations": _extract_recommendations(preset)}
+        started = comfygen_remote.request_json(base_url, token, "POST", "/models/download", {
+            "models": models,
+            "hf_token": settings_store.get_credential("hf_token") or "",
+            "civitai_token": settings_store.get_credential("civitai_api_key") or "",
+        }, timeout=60)
+        download_id = str(started.get("id") or "")
+        if not download_id:
+            raise RuntimeError("pod did not return a download id")
+    except Exception as exc:
+        _reset_install_state()
+        raise HTTPException(status_code=502, detail=f"could not start the download on the pod: {exc}") from exc
+
+    _dedicated_install["download_id"] = download_id
+    threading.Thread(target=_run_dedicated_install, kwargs={
+        "base_url": base_url,
+        "token": token,
+        "download_id": download_id,
+        "preset_id": preset_id,
+        "version": preset.get("comfygen_min_version", "0.0.0"),
+        "disk_size_gb": preset.get("disk_size_estimate_gb", 0),
+        "workflow_json_str": json.dumps(stored_blob),
+        "installed_paths": installed_paths,
+    }, daemon=True, name="preset-install-dedicated").start()
+
+    return JSONResponse(status_code=202, content={
+        "preset_id": preset_id,
+        "state": _install_state["state"],
+        "files_total": _install_state["files_total"],
+        "started_at": _install_state["started_at"],
+    })
+
+
+def _uninstall_dedicated(preset_id: str, paths: list[str]) -> JSONResponse:
+    """Delete a pod-installed preset's files, keeping files that another
+    installed preset still lists (presets often share VAEs / encoders)."""
+    if not _dedicated_runtime():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this preset was installed on a persistent ComfyGen server — attach that "
+                "server again to delete its files, or clear the preset Settings row manually"
+            ),
+        )
+    base_url, token = _dedicated_server()
+
+    shared: set[str] = set()
+    for row in settings_store.list_installed_presets():
+        if row["preset_id"] == preset_id:
+            continue
+        other = settings_store.get_installed_preset(row["preset_id"]) or {}
+        shared.update(other.get("installed_paths") or [])
+    to_delete = [p for p in paths if p not in shared]
+    kept = [p for p in paths if p in shared]
+
+    results: list[dict[str, Any]] = []
+    if to_delete:
+        try:
+            resp = comfygen_remote.request_json(
+                base_url, token, "POST", "/models/delete", {"paths": to_delete}, timeout=120,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"could not delete files on the pod: {exc}") from exc
+        results = resp.get("results") or []
+
+    deleted = [r for r in results if r.get("deleted")]
+    errors = [r for r in results if not r.get("deleted")]
+    if errors:
+        return JSONResponse(status_code=207, content={
+            "ok": False, "preset_id": preset_id,
+            "deleted_count": len(deleted), "errors": errors, "kept_shared": kept,
+        })
+    settings_store.remove_installed_preset(preset_id)
+    return JSONResponse({
+        "ok": True, "preset_id": preset_id,
+        "deleted_count": len(deleted), "errors": [], "kept_shared": kept,
+    })
+
+
 @router.post("/api/presets/install")
 def install_preset(body: InstallBody, mode: str = "cpu") -> JSONResponse:
     """sgs-ui-8ww: shell out to `comfy-gen install-preset` which spawns a
@@ -1316,6 +1622,8 @@ def install_preset(body: InstallBody, mode: str = "cpu") -> JSONResponse:
     """
     if mode not in ("cpu", "gpu"):
         raise HTTPException(status_code=400, detail=f"invalid mode '{mode}' — must be 'cpu' or 'gpu'")
+    if _dedicated_runtime():
+        return _install_dedicated(body.preset_id, mode)
     api_key = settings_store.get_credential("runpod_api_key")
     if not api_key:
         raise HTTPException(status_code=400, detail="runpod_api_key not configured in Settings")
@@ -1473,8 +1781,21 @@ def cancel_install() -> JSONResponse:
     exits cleanly. A 30-second watchdog SIGKILLs if it doesn't.
 
     Returns 409 if no install is in flight."""
-    proc = _install_proc.get("proc")
     current_state = _install_state["state"]
+    download_id = _dedicated_install.get("download_id")
+    if _install_state.get("install_mode") == "dedicated" and download_id and current_state in ("queued", "running"):
+        base_url, token = _dedicated_server()
+        _install_state["state"] = "cancelling"
+        try:
+            comfygen_remote.request_json(
+                base_url, token, "POST", f"/models/download/{download_id}/cancel", timeout=30,
+            )
+        except Exception as exc:
+            _install_state["state"] = current_state
+            raise HTTPException(status_code=502, detail=f"could not cancel the download on the pod: {exc}") from exc
+        return JSONResponse({"ok": True, "state": "cancelling", "preset_id": _install_state["preset_id"]})
+
+    proc = _install_proc.get("proc")
     if proc is None or current_state not in ("queued", "running"):
         raise HTTPException(
             status_code=409,
@@ -1603,6 +1924,11 @@ def refresh_installed_presets() -> dict[str, Any]:
                 # Preserve the canonical paths from the original install — a
                 # metadata refresh must not nuke uninstall's path list.
                 installed_paths=existing_detail.get("installed_paths") or None,
+                # Same for how/where it was installed: the upsert overwrites
+                # these columns, and uninstall routes on install_mode.
+                pod_id=existing_detail.get("pod_id"),
+                install_mode=existing_detail.get("install_mode"),
+                cost_per_hr_at_spawn=existing_detail.get("cost_per_hr_at_spawn"),
             )
             result["refreshed"].append({"preset_id": preset_id})
         except Exception as exc:
@@ -1639,6 +1965,9 @@ def uninstall(preset_id: str) -> JSONResponse:
             "ok": True, "preset_id": preset_id,
             "deleted_count": 0, "errors": [],
         })
+
+    if installed.get("install_mode") == "dedicated":
+        return _uninstall_dedicated(preset_id, paths)
 
     # Need an active endpoint to issue the delete against.
     ep = settings_store.get_endpoint("comfygen")

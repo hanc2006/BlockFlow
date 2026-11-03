@@ -567,7 +567,9 @@ export type InstallProgress = {
   // surfaces the raw error text.
   error_kind?: 'supply_constraint' | 'installer_pod_failed' | 'unknown' | null
   // sgs-ui-wx0: 'cpu' (install-preset CLI) or 'gpu' (pre-8ww fallback).
-  install_mode?: 'cpu' | 'gpu' | null
+  // 'dedicated': downloaded by an attached persistent ComfyGen server into
+  // its own models folder (no installer pod, no serverless endpoint).
+  install_mode?: 'cpu' | 'gpu' | 'dedicated' | null
   // sgs-ui-5k7: milestone phase, narrower than `state`. Drives the install
   // card's narration. 'pod_spawn' (CPU only, before pod is up) → 'preflight'
   // (after pod_spawned) → 'download' (after preflight_ok) → 'finalize'
@@ -684,6 +686,9 @@ export type UninstallResult = {
   // Present only when delete failed wholesale (subprocess non-zero rather
   // than per-path errors).
   error?: string | null
+  // Dedicated server only: files left in place because another installed
+  // preset still uses them.
+  kept_shared?: string[]
 }
 
 // sgs-ui-gb4 follow-up: re-fetch every installed preset's metadata blob
