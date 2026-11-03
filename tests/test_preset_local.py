@@ -184,3 +184,17 @@ def test_shipped_local_presets_are_valid():
     assert not any("x2-1.0" in m["url"] or "x2-1.0" in m["dest"] for m in ltx["models"])
     t2v = (d / "ltx-2-3" / "workflow_t2v.json").read_text()
     assert "ltx-2.3-spatial-upscaler-x2-1.1.safetensors" in t2v and "x2-1.0" not in t2v
+
+
+def test_shipped_wan22_svi_preset_adds_the_missing_upscaler():
+    """The registry's wan22-svi-4pass workflow loads 2xLiveActionV1_SPAN_490000.pth
+    through UpscaleModelLoader (upscale_models/) but the preset never downloaded it."""
+    d = ROOT / "local_presets"
+    entry = next(e for e in json.loads((d / "manifest.json").read_text())["presets"] if e["id"] == "wan22-svi-4pass")
+    preset = json.loads((d / entry["preset_url"]).read_text())
+    (spec,) = [m for m in preset["models"] if m["dest"].endswith("2xLiveActionV1_SPAN_490000.pth")]
+    assert spec["dest"] == "upscale_models/2xLiveActionV1_SPAN_490000.pth"
+    assert spec["url"].startswith("https://raw.githubusercontent.com/jcj83429/upscaling/f73a3a02874360ec6ced18f8bdd8e43b5d7bba57/")
+    assert spec["sha256"] == "8b166c75831ea7f694d9058ee9c8df8148af8cc1d2b57e69e6581b15cab572f7"
+    # the registry's own files are all still there
+    assert len(preset["models"]) == 9

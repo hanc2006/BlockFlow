@@ -3,7 +3,7 @@
   "presets": [
     {
       "id": "ltx-2-3",
-      "name": "LTX 2.3 22B \u2014 Distilled (FP8) (local: 2x upscaler 1.1)",
+      "name": "LTX 2.3 22B — Distilled (FP8) (local: 2x upscaler 1.1)",
       "description": "Lightricks LTX 2.3 22B in FP8 with the 384-rank distilled LoRA stacked on top. Ships two workflows: T2V (text-to-video) and I2V (image-to-video). Uses the Gemma 3 12B fp4_mixed text encoder + abliterated rank-64 LoRA for prompt understanding, plus the official 1.5x (I2V) and 2x (T2V) spatial upscalers. ~46 GB on the ComfyGen volume; recommended GPU tier.",
       "comfygen_min_version": "0.2.0",
       "tags": [
@@ -19,6 +19,25 @@
       "disk_size_estimate_gb": 55,
       "gpu_tier_hint": "recommended",
       "preset_url": "ltx-2-3/preset.json"
+    },
+    {
+      "id": "wan22-svi-4pass",
+      "name": "Wan 2.2 SVI 4-pass + MoreMotion (local: + 2xLiveAction upscaler)",
+      "description": "Wan 2.2 I2V 14B Stable-Video-Infinity (SVI v2 PRO) with a 4-pass motion-enhancement workflow. GGUF Q8 NSFW SVI camera unet pair (CivitAI) + Wan 2.1 VAE + UMT5 fp8 + 4 stacked SVI/lightx2v LoRAs. The ComfyGen block hides all 12 KSamplers and the 4 fixed LoRA loaders — only the 3 Power Lora Loaders (High LoRAs 1+2, Low LoRAs) are exposed for adding character/style LoRAs. ~40 GB on the volume.",
+      "comfygen_min_version": "0.2.0",
+      "tags": [
+        "i2v",
+        "video",
+        "wan",
+        "wan-2.2",
+        "svi",
+        "lightx2v",
+        "gguf",
+        "civitai"
+      ],
+      "disk_size_estimate_gb": 48,
+      "gpu_tier_hint": "performance",
+      "preset_url": "wan22-svi-4pass/preset.json"
     }
   ]
 }

@@ -28,3 +28,7 @@ for an hour).
   `ltx-2.3-spatial-upscaler-x2-1.0` (removed by Lightricks, now HTTP 404) to
   `...-x2-1.1`, in both the model list and the T2V workflow. The 1.1 file has
   no `sha256` here yet, so its download is not hash-checked.
+- `wan22-svi-4pass`: the registry preset plus `upscale_models/2xLiveActionV1_SPAN_490000.pth`,
+  the 2x upscaler its workflow loads but the registry preset does not download
+  (source: the author's GitHub, as listed on OpenModelDB; license CC-BY-NC-SA-4.0,
+  non-commercial). The workflow itself still comes from the registry.
