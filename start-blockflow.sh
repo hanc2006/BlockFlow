@@ -7,7 +7,10 @@
 #
 # Optional environment:
 #   BLOCKFLOW_DATA_DIR  Settings, credentials, run history, flows, outputs
-#                       (default: /workspace/blockflow-data)
+#                       (default: /workspace/.blockflow). When it is not set, the
+#                       new folder does not exist yet and the old default
+#                       /workspace/blockflow-data does, that folder is moved here
+#                       once and a symlink is left at the old path.
 #   PYTHON_LIBS         Persistent Python folder whose bin/ holds uv
 #                       (default: /workspace/.python; its bin/ is put first on PATH)
 #   FRONTEND_PORT       Web UI port to expose via RunPod (default: 9000)
@@ -29,7 +32,14 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-export BLOCKFLOW_DATA_DIR="${BLOCKFLOW_DATA_DIR:-/workspace/blockflow-data}"
+DEFAULT_DATA_DIR="/workspace/.blockflow"
+LEGACY_DATA_DIR="/workspace/blockflow-data"   # default before; migrated once
+MIGRATE_FROM=""
+if [ -z "${BLOCKFLOW_DATA_DIR:-}" ] && [ ! -e "$DEFAULT_DATA_DIR" ] \
+   && [ -d "$LEGACY_DATA_DIR" ] && [ ! -L "$LEGACY_DATA_DIR" ]; then
+  MIGRATE_FROM="$LEGACY_DATA_DIR"
+fi
+export BLOCKFLOW_DATA_DIR="${BLOCKFLOW_DATA_DIR:-$DEFAULT_DATA_DIR}"
 PYTHON_LIBS="${PYTHON_LIBS:-/workspace/.python}"
 case ":$PATH:" in
   *":${PYTHON_LIBS}/bin:"*) ;;
@@ -44,9 +54,19 @@ export BLOCKFLOW_NO_OPEN=1   # headless pod: do not try to open a browser
 export BLOCKFLOW_USE_LOCAL_PRESETS="${BLOCKFLOW_USE_LOCAL_PRESETS-1}"   # local preset fixes on by default
 BLOCKFLOW_WAIT="${BLOCKFLOW_WAIT:-600}"
 
-mkdir -p "$BLOCKFLOW_DATA_DIR"
-LOG_FILE="${BLOCKFLOW_LOG:-${BLOCKFLOW_DATA_DIR}/blockflow.log}"
-PID_FILE="${BLOCKFLOW_DATA_DIR}/blockflow.pid"
+# Until the data is migrated, a running BlockFlow's PID file is still in the
+# old folder; stop that instance before moving the folder.
+PID_FILE="${MIGRATE_FROM:-$BLOCKFLOW_DATA_DIR}/blockflow.pid"
+
+migrate_data_dir() {
+  [ -n "$MIGRATE_FROM" ] || return 0
+  echo "==> Moving BlockFlow data ${MIGRATE_FROM} -> ${BLOCKFLOW_DATA_DIR}"
+  mv "$MIGRATE_FROM" "$BLOCKFLOW_DATA_DIR"
+  # Absolute paths stored under the old folder (e.g. job records) keep working.
+  ln -s "$BLOCKFLOW_DATA_DIR" "$MIGRATE_FROM"
+  MIGRATE_FROM=""
+  PID_FILE="${BLOCKFLOW_DATA_DIR}/blockflow.pid"
+}
 
 # app.py starts uvicorn and Next.js as children. BlockFlow runs in its own
 # process group (setsid), so stopping it signals the whole group and no child
@@ -159,6 +179,9 @@ fi
 
 stop_running
 free_ports
+migrate_data_dir
+mkdir -p "$BLOCKFLOW_DATA_DIR"
+LOG_FILE="${BLOCKFLOW_LOG:-${BLOCKFLOW_DATA_DIR}/blockflow.log}"
 
 echo "==> Data: ${BLOCKFLOW_DATA_DIR}"
 echo "==> uv: $(command -v uv)"
