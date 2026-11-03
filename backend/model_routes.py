@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from backend import civitai_client, comfy_gen_cli, config, lora_metadata, settings_store
+from backend import comfygen_pod_models as pod_models
 from backend.lora_routes import (
     CACHE_STALE_AFTER_SEC,
     _comfy_gen_error_message,
@@ -50,6 +51,9 @@ ALLOWED_MODEL_FOLDERS = (
 )
 
 _DEST_ROOT = "/runpod-volume/ComfyUI/models"
+# Returned by _endpoint_id_or_409 when a persistent ComfyGen server is attached:
+# the comfy-gen helpers below then talk to the pod instead of an endpoint.
+_DEDICATED = "__dedicated_server__"
 _SUBPROCESS_TIMEOUT_SEC = 120
 _DOWNLOAD_TIMEOUT_SEC = 30 * 60
 _LOG_TAIL_MAXLEN = 30
@@ -132,6 +136,9 @@ def _inline_threads_for_tests(monkeypatch) -> None:
 
 
 def _endpoint_id_or_409() -> str:
+    if pod_models.is_dedicated():
+        pod_models.server()  # 400 when the URL / token are missing
+        return _DEDICATED
     ep = settings_store.get_endpoint("comfygen")
     if ep is None or not ep.get("endpoint_id"):
         raise HTTPException(
@@ -167,7 +174,10 @@ def _validate_filename(filename: str) -> str:
 
 
 def _canonical_path(folder: str, filename: str) -> str:
-    return f"{_DEST_ROOT}/{_validate_folder(folder)}/{_validate_filename(filename)}"
+    folder, filename = _validate_folder(folder), _validate_filename(filename)
+    if pod_models.is_dedicated():
+        return f"{folder}/{filename}"  # relative to the pod's models folder
+    return f"{_DEST_ROOT}/{folder}/{filename}"
 
 
 def _read_cache_file() -> tuple[dict[str, Any], float | None]:
@@ -327,11 +337,15 @@ def _list_folder_from_comfygen(folder: str, endpoint_id: str) -> list[dict[str, 
 
 
 def _sync_all_folders(endpoint_id: str) -> dict[str, list[dict[str, Any]]]:
+    if endpoint_id == _DEDICATED:
+        return pod_models.list_folders(ALLOWED_MODEL_FOLDERS)
     return {folder: _list_folder_from_comfygen(folder, endpoint_id) for folder in ALLOWED_MODEL_FOLDERS}
 
 
 def _delete_subprocess(items: list[dict[str, str]], endpoint_id: str) -> list[dict[str, Any]]:
     paths = [item["path"] for item in items]
+    if endpoint_id == _DEDICATED:
+        return pod_models.delete(paths)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tf:
         json.dump(paths, tf)
         batch_file = tf.name
@@ -364,6 +378,8 @@ def _delete_subprocess(items: list[dict[str, str]], endpoint_id: str) -> list[di
 
 
 def _run_download_streaming(entries: list[dict[str, Any]], endpoint_id: str) -> tuple[bool, Any]:
+    if endpoint_id == _DEDICATED:
+        return _run_download_on_pod(entries)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tf:
         json.dump(entries, tf)
         batch_file = tf.name
@@ -419,6 +435,19 @@ def _run_download_streaming(entries: list[dict[str, Any]], endpoint_id: str) -> 
             Path(batch_file).unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _pod_download_spec(entry: dict[str, Any]) -> dict[str, Any]:
+    """comfy-gen batch entry -> pod /models/download item."""
+    url = entry.get("url") or pod_models.civitai_download_url(entry["version_id"])
+    return {"url": url, "dest": f"{entry['dest']}/{entry['filename']}"}
+
+
+def _run_download_on_pod(entries: list[dict[str, Any]]) -> tuple[bool, Any]:
+    def _progress(status: dict[str, Any]) -> None:
+        _download_state["progress_percent"] = pod_models.percent_done(status)
+
+    return pod_models.download([_pod_download_spec(e) for e in entries], on_progress=_progress)
 
 
 # Extensions the worker/ComfyUI recognize as model weights. A URL whose final

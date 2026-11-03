@@ -34,10 +34,14 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from backend import civitai_client, comfy_gen_cli, config, lora_metadata, settings_store
+from backend import comfygen_pod_models as pod_models
 
 router = APIRouter()
 
 LORA_DEST_DIR = "/runpod-volume/ComfyUI/models/loras"
+# Returned by _endpoint_id_or_409 when a persistent ComfyGen server is attached:
+# the comfy-gen helpers below then talk to the pod instead of an endpoint.
+_DEDICATED = "__dedicated_server__"
 _SUBPROCESS_TIMEOUT_SEC = 120  # `comfy-gen list loras` can cold-start ~50s
 _DOWNLOAD_TIMEOUT_SEC = 30 * 60  # CivitAI/HF downloads can take many minutes
 CACHE_STALE_AFTER_SEC = 24 * 3600  # 24h — matches the ComfyGen block cache TTL
@@ -116,6 +120,9 @@ class SetSourceRequest(BaseModel):
 # ---- Helpers (monkeypatched in tests) ----
 
 def _endpoint_id_or_409() -> str:
+    if pod_models.is_dedicated():
+        pod_models.server()  # 400 when the URL / token are missing
+        return _DEDICATED
     ep = settings_store.get_endpoint("comfygen")
     if ep is None or not ep.get("endpoint_id"):
         raise HTTPException(
@@ -260,6 +267,10 @@ def _fetch_loras_from_comfygen(endpoint_id: str) -> list[str]:
     {ok, model_type, files: [{filename, path, size_mb}], ...}. Some CLI
     versions can also emit status text before the final JSON blob.
     """
+    if endpoint_id == _DEDICATED:
+        names = [row["filename"] for row in pod_models.list_folders(["loras"])["loras"]]
+        _write_cached_loras(names, fetched_at=time.time())
+        return names
     try:
         comfy_gen = comfy_gen_cli.resolve_comfy_gen()
     except comfy_gen_cli.ComfyGenNotFound as exc:
@@ -309,6 +320,8 @@ def _delete_subprocess(filenames: list[str], endpoint_id: str) -> list[dict[str,
     The CLI reads the batch payload from a JSON file (not stdin), so we
     write a tempfile and pass its path. Output is always JSON on stdout.
     """
+    if endpoint_id == _DEDICATED:
+        return pod_models.delete([f"loras/{f}" for f in filenames])
     paths = [f"{LORA_DEST_DIR}/{f}" for f in filenames]
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tf:
         json.dump(paths, tf)
@@ -355,6 +368,17 @@ def _run_download_streaming(
     `_download_state["progress_percent"]` as aria2 emits lines.
     Tests monkeypatch this whole function to bypass the real subprocess.
     """
+    if endpoint_id == _DEDICATED:
+        def _progress(status: dict[str, Any]) -> None:
+            _download_state["progress_percent"] = pod_models.percent_done(status)
+
+        models = []
+        for entry in entries:
+            # civitai entries carry no filename; the route resolved it already
+            filename = entry.get("filename") or _download_state["filename"]
+            url = entry.get("url") or pod_models.civitai_download_url(entry["version_id"])
+            models.append({"url": url, "dest": f"loras/{filename}"})
+        return pod_models.download(models, on_progress=_progress)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tf:
         json.dump(entries, tf)
         batch_file = tf.name

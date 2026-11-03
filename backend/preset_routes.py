@@ -46,7 +46,15 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from backend import comfy_gen_cli, comfygen_remote, config, preset_resolver, runpod_api, settings_store
+from backend import (
+    comfy_gen_cli,
+    comfygen_pod_models,
+    comfygen_remote,
+    config,
+    preset_resolver,
+    runpod_api,
+    settings_store,
+)
 
 router = APIRouter()
 
@@ -1330,19 +1338,12 @@ def _require_credentials_for_preset(preset: dict) -> None:
 # === Dedicated runtime (persistent ComfyGen server) =========================
 
 def _dedicated_runtime() -> bool:
-    return settings_store.get_comfygen_runtime().get("runtime_kind") == "dedicated"
+    return comfygen_pod_models.is_dedicated()
 
 
 def _dedicated_server() -> tuple[str, str]:
     """(base_url, token) of the attached server; 400 if either is missing."""
-    base_url = str(settings_store.get_comfygen_runtime().get("base_url") or "")
-    token = (settings_store.get_credential("comfygen_remote_token") or "").strip()
-    if not base_url or not token:
-        raise HTTPException(
-            status_code=400,
-            detail="Dedicated ComfyGen server URL and bearer token are required",
-        )
-    return base_url, token
+    return comfygen_pod_models.server()
 
 
 def _pod_model_path(dest: str) -> str:
@@ -1531,8 +1532,7 @@ def _install_dedicated(preset_id: str, mode: str) -> JSONResponse:
         stored_blob = {"workflows": workflows, "recommendations": _extract_recommendations(preset)}
         started = comfygen_remote.request_json(base_url, token, "POST", "/models/download", {
             "models": models,
-            "hf_token": settings_store.get_credential("hf_token") or "",
-            "civitai_token": settings_store.get_credential("civitai_api_key") or "",
+            **comfygen_pod_models.tokens(),
         }, timeout=60)
         download_id = str(started.get("id") or "")
         if not download_id:
