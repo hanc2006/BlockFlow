@@ -31,4 +31,9 @@ for an hour).
 - `wan22-svi-4pass`: the registry preset plus `upscale_models/2xLiveActionV1_SPAN_490000.pth`,
   the 2x upscaler its workflow loads but the registry preset does not download
   (source: the author's GitHub, as listed on OpenModelDB; license CC-BY-NC-SA-4.0,
-  non-commercial). The workflow itself still comes from the registry.
+  non-commercial). The workflow is a local copy (`workflow.json`) with one
+  change: the high-noise lightning LoRA (node 883) is the Wan 2.2 Lightning
+  Seko V1 `high_noise_model` at strength 1, paired with the low-noise one the
+  preset already uses, instead of the Wan 2.1 lightx2v 480p LoRA at strength 4,
+  whose `img_emb` keys do not exist in Wan 2.2 ("lora key not loaded"). Its
+  download has no `sha256` here yet, so it is not hash-checked.

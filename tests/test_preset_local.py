@@ -198,3 +198,21 @@ def test_shipped_wan22_svi_preset_adds_the_missing_upscaler():
     assert spec["sha256"] == "8b166c75831ea7f694d9058ee9c8df8148af8cc1d2b57e69e6581b15cab572f7"
     # the registry's own files are all still there
     assert len(preset["models"]) == 9
+
+
+def test_shipped_wan22_svi_preset_uses_wan22_lightning_on_high_model():
+    """The high-noise lightning LoRA is the Wan 2.2 Lightning (Seko V1) one, not the
+    Wan 2.1 lightx2v LoRA whose img_emb keys cannot load into Wan 2.2."""
+    d = ROOT / "local_presets" / "wan22-svi-4pass"
+    preset = json.loads((d / "preset.json").read_text())
+    (wf,) = preset["workflows"]
+    assert not wf["url"].startswith("https://")
+    workflow = json.loads((d / wf["url"]).read_text())
+    high = workflow["883"]["inputs"]
+    assert high["lora_name"] == "i2v_lightx2v_high_noise_model.safetensors"
+    assert high["model"] == ["881", 0]
+    dests = [m["dest"] for m in preset["models"]]
+    assert "loras/i2v_lightx2v_high_noise_model.safetensors" in dests
+    assert not any("lightx2v_I2V_14B_480p" in x for x in dests)
+    assert "lightx2v_I2V_14B_480p" not in json.dumps(workflow)
+    assert len(preset["models"]) == 9

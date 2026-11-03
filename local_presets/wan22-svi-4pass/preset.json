@@ -1,7 +1,7 @@
 {
   "id": "wan22-svi-4pass",
   "name": "Wan 2.2 SVI 4-pass + MoreMotion",
-  "description": "Wan 2.2 I2V 14B Stable-Video-Infinity (SVI v2 PRO) with a 4-pass motion-enhancement workflow. GGUF Q8 NSFW SVI camera unet pair (CivitAI) + Wan 2.1 VAE + UMT5 fp8 + 4 stacked SVI/lightx2v LoRAs. The ComfyGen block hides all 12 KSamplers and the 4 fixed LoRA loaders — only the 3 Power Lora Loaders (High LoRAs 1+2, Low LoRAs) are exposed for adding character/style LoRAs. ~40 GB on the volume. Local copy: also downloads 2xLiveActionV1_SPAN_490000.pth (2x upscaler used by the workflow's UpscaleModelLoader, CC-BY-NC-SA-4.0 by jcj83429), which the registry preset omits.",
+  "description": "Wan 2.2 I2V 14B Stable-Video-Infinity (SVI v2 PRO) with a 4-pass motion-enhancement workflow. GGUF Q8 NSFW SVI camera unet pair (CivitAI) + Wan 2.1 VAE + UMT5 fp8 + 4 stacked SVI/lightx2v LoRAs. The ComfyGen block hides all 12 KSamplers and the 4 fixed LoRA loaders — only the 3 Power Lora Loaders (High LoRAs 1+2, Low LoRAs) are exposed for adding character/style LoRAs. ~40 GB on the volume. Local copy: also downloads 2xLiveActionV1_SPAN_490000.pth (2x upscaler used by the workflow's UpscaleModelLoader, CC-BY-NC-SA-4.0 by jcj83429), which the registry preset omits. The high-noise lightning LoRA is the Wan 2.2 Lightning Seko V1 high_noise_model (strength 1) instead of the Wan 2.1 lightx2v 480p LoRA at strength 4, whose img_emb keys do not exist in Wan 2.2 (\"lora key not loaded\" warnings); the workflow is a local copy with only that change.",
   "comfygen_min_version": "0.2.0",
   "tags": [
     "i2v",
@@ -16,7 +16,7 @@
   "workflows": [
     {
       "name": "4-pass MoreMotion",
-      "url": "https://raw.githubusercontent.com/Hearmeman24/blockflow-presets/main/registry/wan22-svi-4pass/workflow.json",
+      "url": "workflow.json",
       "sha256": "d418b88c5f58ab41af4c0680f8d5b66b87994c3b5f2a23242dbd43a3e909603d",
       "hidden_nodes": [
         "881",
@@ -95,10 +95,9 @@
     },
     {
       "source": "huggingface",
-      "url": "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank128_bf16.safetensors",
-      "dest": "loras/lightx2v_I2V_14B_480p_cfg_step_distill_rank128_bf16.safetensors",
-      "sha256": "5c324ada09cfa447844f5d9a57240463a515de38270ef40c7513d74be3e64e72",
-      "size_gb": 1.366
+      "url": "https://huggingface.co/lightx2v/Wan2.2-Lightning/resolve/main/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors",
+      "dest": "loras/i2v_lightx2v_high_noise_model.safetensors",
+      "size_gb": 1.143
     },
     {
       "source": "huggingface",
