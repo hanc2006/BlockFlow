@@ -541,22 +541,32 @@ function ComfyGenBlock({
   const [settingsEndpointId, setSettingsEndpointId] = useState<string | null>(null)
   const [settingsEndpointLoaded, setSettingsEndpointLoaded] = useState(false)
 
-  useEffect(() => {
-    getEndpoint('comfygen')
-      .then((ep) => setSettingsEndpointId(ep?.endpoint_id ?? null))
-      .catch(() => setSettingsEndpointId(null))
-      .finally(() => setSettingsEndpointLoaded(true))
-  }, [])
 
   // An attached persistent ComfyGen server runs jobs without a serverless
   // endpoint (the backend dispatches /run to it), so it counts as configured.
   const [dedicatedServerUrl, setDedicatedServerUrl] = useState<string | null>(null)
   const [runtimeLoaded, setRuntimeLoaded] = useState(false)
   useEffect(() => {
+    let cancelled = false
+    // Runtime first: with a persistent server attached there is no serverless
+    // endpoint, so skip that lookup (it would only answer 404).
     getComfyGenRuntime()
-      .then((rt) => setDedicatedServerUrl(rt.runtime_kind === 'dedicated' ? (rt.base_url ?? '') : null))
-      .catch(() => setDedicatedServerUrl(null))
-      .finally(() => setRuntimeLoaded(true))
+      .then((rt) => (rt.runtime_kind === 'dedicated' ? (rt.base_url ?? '') : null))
+      .catch(() => null)
+      .then(async (dedicatedUrl) => {
+        if (cancelled) return
+        setDedicatedServerUrl(dedicatedUrl)
+        setRuntimeLoaded(true)
+        if (dedicatedUrl !== null) return
+        const ep = await getEndpoint('comfygen').catch(() => null)
+        if (!cancelled) setSettingsEndpointId(ep?.endpoint_id ?? null)
+      })
+      .finally(() => {
+        if (!cancelled) setSettingsEndpointLoaded(true)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const endpointId = endpointIdOverride.trim() || settingsEndpointId || ''

@@ -228,10 +228,16 @@ describe('ComfyGen preset refresh state', () => {
     renderBlock()
 
     await waitFor(() => expect(settingsMocks.getComfyGenRuntime).toHaveBeenCalled())
-    await waitFor(() => expect(settingsMocks.getEndpoint).toHaveBeenCalled())
-    // let both settings requests resolve, then the warning must still be absent
+    // let the runtime request resolve, then the warning must still be absent
     await new Promise((r) => setTimeout(r, 0))
     expect(screen.queryByText(/ComfyGen endpoint is not set up/i)).not.toBeInTheDocument()
+    // no serverless endpoint lookup (it would only 404) when a server is attached
+    expect(settingsMocks.getEndpoint).not.toHaveBeenCalled()
+  })
+
+  test('serverless runtime still looks up the endpoint', async () => {
+    renderBlock()
+    await waitFor(() => expect(settingsMocks.getEndpoint).toHaveBeenCalledWith('comfygen'))
   })
 
   test('runtime lookup failure falls back to the endpoint check', async () => {
